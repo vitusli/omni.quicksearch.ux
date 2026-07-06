@@ -34,6 +34,7 @@ class Extension(omni.ext.IExt):
         self._action_registry = None
         self._hotkey_registry = None
         self._snapshot_task = None
+        self._exclusive = False
         self._expanded_paths = set()
         self._collapsed_paths = set()
 
@@ -47,6 +48,8 @@ class Extension(omni.ext.IExt):
             "Quick Search UX",
             UnifiedQuickSearchModel,
             None,
+            accept_fn=self._accept_provider,
+            exclusive_fn=self._is_exclusive,
             priority=20,
             flat_search=True,
         )
@@ -69,11 +72,23 @@ class Extension(omni.ext.IExt):
         carb.log_info("[QuickSearchUX] Unregistered unified quick-search provider")
 
     def show_window(self):
+        self._exclusive = True
         self._capture_menu_snapshot_once()
         if not self._window:
             self._window = QuickSearchWindow()
         else:
             self._window.show()
+        asyncio.ensure_future(self._clear_exclusive_next_frame())
+
+    def _is_exclusive(self):
+        return self._exclusive
+
+    def _accept_provider(self):
+        return self._exclusive
+
+    async def _clear_exclusive_next_frame(self):
+        await omni.kit.app.get_app().next_update_async()
+        self._exclusive = False
 
     async def _capture_menu_snapshot(self):
         for _ in range(120):

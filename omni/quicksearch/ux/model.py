@@ -84,10 +84,10 @@ class UnifiedQuickSearchModel(ui.AbstractItemModel):
 
     def _build_items(self) -> list[QuickSearchItem]:
         items = []
+        items.extend(self._build_stage_roots())
         menu_root = self._build_menu_root()
         if menu_root:
             items.append(menu_root)
-        items.extend(self._build_stage_roots())
         return items
 
     def _build_menu_root(self) -> Optional[QuickSearchItem]:
