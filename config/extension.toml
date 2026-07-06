@@ -1,0 +1,30 @@
+[core]
+reloadable = true
+order = 0
+
+[package]
+version = "1.0.1"
+category = "Utilities"
+title = "Quick Search UX"
+description = "Unified quick-search for menu and stage actions with Ctrl+F."
+authors = ["Local"]
+repository = ""
+keywords = ["quicksearch", "menu", "stage", "ctrl+f"]
+readme = "README.md"
+
+[dependencies]
+"omni.ui" = {}
+"omni.kit.window.quicksearch" = {}
+"omni.kit.menu.utils" = {}
+"omni.kit.actions.core" = {}
+"omni.kit.mainwindow" = {}
+"omni.kit.hotkeys.core" = { optional = true }
+"omni.appwindow" = { optional = true }
+"omni.kit.context_menu" = {}
+"omni.kit.commands" = {}
+"omni.usd" = {}
+"omni.physx.commands" = { optional = true }
+"omni.kit.primitive.mesh" = { optional = true }
+
+[[python.module]]
+name = "omni.quicksearch.ux"
