@@ -15,6 +15,22 @@ from .model import UnifiedQuickSearchModel, set_menu_snapshot
 
 ACTION_ID = "ShowUnifiedQuickSearch"
 ACTION_DISPLAY_NAME = "Unified Quick Search"
+LAYOUT_QUICK_LOAD_ACTION_ID = "RunLayoutQuickLoadCtrl8"
+LAYOUT_QUICK_LOAD_ACTION_DISPLAY_NAME = "Layout->Quick Load"
+LAYOUT_QUICK_LOAD_ACTION_CANDIDATES = (
+    ("isaacsim.app.setup", "layout_quick_load"),
+    ("omni.kit.quicklayout", "quicklayout_quick_load"),
+    ("omni.kit.quicklayout", "quick_load"),
+)
+COPY_SELECTED_PRIMS_ACTION_ID = "CopySelectedPrimPaths"
+COPY_SELECTED_PRIMS_ACTION_DISPLAY_NAME = "Stage->Copy Selected Prim Paths"
+TOGGLE_SELECTED_PRIMS_ACTIVE_STATE_ACTION_ID = "ToggleSelectedPrimActiveState"
+TOGGLE_SELECTED_PRIMS_ACTIVE_STATE_ACTION_DISPLAY_NAME = "Stage->Toggle Selected Prim Active State"
+LAYOUT_QUICK_LOAD_PATH_CANDIDATES = (
+    ("Layout", "Quick Load"),
+    ("Quicklayout", "Quick Load"),
+    ("Quicklayout", "Quicklayout Quick Load"),
+)
 
 
 class Extension(omni.ext.IExt):
@@ -37,12 +53,14 @@ class Extension(omni.ext.IExt):
         self._exclusive = False
         self._expanded_paths = set()
         self._collapsed_paths = set()
+        self._menu_trigger_map = {}
 
     def on_startup(self, ext_id: str):
         self._ext_id = omni.ext.get_extension_name(ext_id)
         self._extension_name = self._ext_id
         self._expanded_paths = set()
         self._collapsed_paths = set()
+        self._menu_trigger_map = {}
 
         self._subscription = QuickSearchRegistry().register_quick_search_model(
             "Quick Search UX",
@@ -66,6 +84,7 @@ class Extension(omni.ext.IExt):
         self._subscription = None
         self._expanded_paths = set()
         self._collapsed_paths = set()
+        self._menu_trigger_map = {}
         if self._window:
             self._window.destroy()
             self._window = None
@@ -111,6 +130,7 @@ class Extension(omni.ext.IExt):
             if not menu_dict:
                 return False
 
+            self._menu_trigger_map = trigger_map or {}
             set_menu_snapshot(menu_dict, trigger_map)
             return True
         except Exception as exc:
@@ -176,8 +196,29 @@ class Extension(omni.ext.IExt):
                 description="Open unified quick search for menu and stage actions",
                 tag="Quick Search UX",
             )
+
+            self._action_registry.register_action(
+                self._ext_id,
+                LAYOUT_QUICK_LOAD_ACTION_ID,
+                self._trigger_layout_quick_load,
+                display_name=LAYOUT_QUICK_LOAD_ACTION_DISPLAY_NAME,
+                description="Run Layout > Quick Load from menu bar",
+                tag="Quick Search UX",
+            )
+
             self._hotkey_registry = get_hotkey_registry()
             self._hotkey = self._hotkey_registry.register_hotkey(self._ext_id, key, self._ext_id, ACTION_ID)
+
+            key_8_inputs = self._keyboard_inputs_for_digit_8()
+            if not key_8_inputs:
+                carb.log_warn("[QuickSearchUX] Could not resolve keyboard enum for digit 8, using event fallback only")
+            for key_8 in key_8_inputs:
+                self._hotkey_registry.register_hotkey(
+                    self._ext_id,
+                    KeyCombination(key_8, carb.input.KEYBOARD_MODIFIER_FLAG_CONTROL),
+                    self._ext_id,
+                    LAYOUT_QUICK_LOAD_ACTION_ID,
+                )
         except ImportError:
             self._register_keyboard_fallback()
         except Exception as exc:
@@ -197,6 +238,22 @@ class Extension(omni.ext.IExt):
                 self._action_registry = action_registry
 
             actions = [
+                (
+                    COPY_SELECTED_PRIMS_ACTION_ID,
+                    COPY_SELECTED_PRIMS_ACTION_DISPLAY_NAME,
+                    "Copy selected prim paths to clipboard.",
+                    self._copy_selected_prim_paths,
+                    carb.input.KeyboardInput.C,
+                    carb.input.KEYBOARD_MODIFIER_FLAG_CONTROL | carb.input.KEYBOARD_MODIFIER_FLAG_SHIFT,
+                ),
+                (
+                    TOGGLE_SELECTED_PRIMS_ACTIVE_STATE_ACTION_ID,
+                    TOGGLE_SELECTED_PRIMS_ACTIVE_STATE_ACTION_DISPLAY_NAME,
+                    "Toggle active state for selected prims.",
+                    self._toggle_selected_prims_active_state,
+                    carb.input.KeyboardInput.BACKSPACE,
+                    0,
+                ),
                 (
                     "collapse_current_hierarchy",
                     "Stage->Collapse Current Hierarchy",
@@ -286,7 +343,94 @@ class Extension(omni.ext.IExt):
             )
             if is_ctrl_f:
                 self.show_window()
+
+            is_ctrl_8 = bool(event.modifiers & carb.input.KEYBOARD_MODIFIER_FLAG_CONTROL) and self._is_digit_8_input(
+                event.input
+            )
+            if is_ctrl_8:
+                self._trigger_layout_quick_load()
+
+            is_ctrl_shift_c = (
+                event.input == carb.input.KeyboardInput.C
+                and bool(event.modifiers & carb.input.KEYBOARD_MODIFIER_FLAG_CONTROL)
+                and bool(event.modifiers & carb.input.KEYBOARD_MODIFIER_FLAG_SHIFT)
+            )
+            if is_ctrl_shift_c:
+                self._copy_selected_prim_paths()
         return True
+
+    @staticmethod
+    def _keyboard_inputs_for_digit_8() -> list:
+        names = (
+            "KEY_8",
+            "NUM_8",
+            "NUMPAD_8",
+            "KP_8",
+            "D8",
+            "_8",
+        )
+        values = []
+        seen = set()
+        for name in names:
+            key = getattr(carb.input.KeyboardInput, name, None)
+            if key is None:
+                continue
+            key_id = int(key)
+            if key_id in seen:
+                continue
+            seen.add(key_id)
+            values.append(key)
+        return values
+
+    @staticmethod
+    def _is_digit_8_input(key_input) -> bool:
+        for known_key in Extension._keyboard_inputs_for_digit_8():
+            if key_input == known_key:
+                return True
+
+        key_name = getattr(key_input, "name", "") or str(key_input)
+        normalized = str(key_name).upper().replace(" ", "")
+        if "F8" in normalized:
+            return False
+        return normalized.endswith("_8") or normalized.endswith("8") and any(
+            token in normalized for token in ("KEY", "NUM", "NUMPAD", "KP", "D8")
+        )
+
+    def _trigger_layout_quick_load(self):
+        action_registry = self._action_registry
+        if action_registry is None:
+            try:
+                from omni.kit.actions.core import get_action_registry
+
+                action_registry = get_action_registry()
+                self._action_registry = action_registry
+            except Exception:
+                action_registry = None
+
+        if action_registry is not None:
+            for ext_id, action_id in LAYOUT_QUICK_LOAD_ACTION_CANDIDATES:
+                try:
+                    action_registry.execute_action(ext_id, action_id)
+                    carb.log_info(f"[QuickSearchUX] Triggered action: {ext_id} {action_id}")
+                    return
+                except Exception:
+                    continue
+
+        if not self._menu_trigger_map:
+            self._capture_menu_snapshot_once()
+
+        for path in LAYOUT_QUICK_LOAD_PATH_CANDIDATES:
+            trigger_fn = self._menu_trigger_map.get(path)
+            if not trigger_fn:
+                continue
+            try:
+                trigger_fn()
+                carb.log_info(f"[QuickSearchUX] Triggered menu action: {' > '.join(path)}")
+                return
+            except Exception as exc:
+                carb.log_warn(f"[QuickSearchUX] Could not trigger {' > '.join(path)}: {exc}")
+
+        carb.log_warn("[QuickSearchUX] Quick Load action not found in known actions/paths")
 
     @staticmethod
     def _get_stage_widget():
@@ -299,12 +443,135 @@ class Extension(omni.ext.IExt):
         return get_widget()
 
     @staticmethod
-    def _get_selected_path() -> str | None:
+    def _get_selected_paths() -> list[str]:
         context = omni.usd.get_context()
         selected_paths = context.get_selection().get_selected_prim_paths()
+        return [path for path in selected_paths if isinstance(path, str) and path]
+
+    @staticmethod
+    def _get_selected_path() -> str | None:
+        selected_paths = Extension._get_selected_paths()
         if not selected_paths:
             return None
         return selected_paths[0]
+
+    @staticmethod
+    def _copy_text_to_clipboard(text: str) -> bool:
+        if not text:
+            return False
+
+        try:
+            import omni.kit.clipboard
+
+            copy_fn = getattr(omni.kit.clipboard, "copy", None)
+            if callable(copy_fn):
+                copy_fn(text)
+                return True
+        except Exception:
+            pass
+
+        try:
+            app = omni.kit.app.get_app()
+            for method_name in ("set_clipboard", "set_clipboard_text", "copy_to_clipboard"):
+                method = getattr(app, method_name, None)
+                if callable(method):
+                    method(text)
+                    return True
+        except Exception:
+            pass
+
+        return False
+
+    def _copy_selected_prim_paths(self):
+        selected_paths = self._get_selected_paths()
+        if not selected_paths:
+            carb.log_info("[QuickSearchUX] No selected prims to copy")
+            return
+
+        text = "\n".join(selected_paths)
+        if self._copy_text_to_clipboard(text):
+            carb.log_info(f"[QuickSearchUX] Copied {len(selected_paths)} selected prim path(s) to clipboard")
+        else:
+            carb.log_warn("[QuickSearchUX] Could not copy selected prim paths to clipboard")
+
+    def _toggle_selected_prims_active_state(self):
+        context = omni.usd.get_context()
+        stage = context.get_stage()
+        if not stage:
+            return
+
+        selected_paths = self._get_selected_paths()
+        if not selected_paths:
+            carb.log_info("[QuickSearchUX] No selected prims to toggle active state")
+            return
+
+        toggled_count = 0
+        for path in selected_paths:
+            prim = stage.GetPrimAtPath(path)
+            try:
+                if prim.IsValid():
+                    prim.SetActive(not prim.IsActive())
+                    toggled_count += 1
+                    continue
+
+                carb.log_info(f"[QuickSearchUX] Prim {path} is not valid on composed stage, trying layer fallback")
+                if self._set_inactive_prim_active(stage, path):
+                    carb.log_info(f"[QuickSearchUX] Reactivated prim via layer fallback: {path}")
+                    toggled_count += 1
+                else:
+                    carb.log_warn(f"[QuickSearchUX] Layer fallback could not find prim spec: {path}")
+            except Exception as exc:
+                carb.log_warn(f"[QuickSearchUX] Could not toggle prim active state for {path}: {exc}")
+
+        if toggled_count:
+            carb.log_info(f"[QuickSearchUX] Toggled active state for {toggled_count} selected prim(s)")
+
+    @staticmethod
+    def _set_inactive_prim_active(stage, path: str) -> bool:
+        layers = []
+
+        try:
+            edit_target = stage.GetEditTarget()
+            if edit_target:
+                edit_layer = edit_target.GetLayer()
+                if edit_layer:
+                    layers.append(edit_layer)
+        except Exception:
+            pass
+
+        try:
+            session_layer = stage.GetSessionLayer()
+            if session_layer:
+                layers.append(session_layer)
+        except Exception:
+            pass
+
+        try:
+            root_layer = stage.GetRootLayer()
+            if root_layer:
+                layers.append(root_layer)
+        except Exception:
+            pass
+
+        seen = set()
+        for layer in layers:
+            layer_id = id(layer)
+            if layer_id in seen:
+                continue
+            seen.add(layer_id)
+            try:
+                layer_name = getattr(layer, "identifier", None) or getattr(layer, "realPath", None) or "<anonymous layer>"
+                prim_spec = layer.GetPrimAtPath(path)
+                if prim_spec is None:
+                    carb.log_info(f"[QuickSearchUX] Prim spec {path} not found in layer: {layer_name}")
+                    continue
+                prim_spec.active = True
+                carb.log_info(f"[QuickSearchUX] Prim spec {path} set active in layer: {layer_name}")
+                return True
+            except Exception:
+                continue
+
+        return False
 
     def _collapse_current_hierarchy(self):
         stage_widget = self._get_stage_widget()
