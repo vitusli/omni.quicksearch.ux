@@ -23,6 +23,7 @@ readme = "README.md"
 "omni.kit.context_menu" = {}
 "omni.kit.commands" = {}
 "omni.usd" = {}
+"omni.kit.viewport.utility" = {}
 "omni.kit.window.filepicker" = {}
 "omni.kit.widget.filebrowser" = {}
 "omni.client" = {}

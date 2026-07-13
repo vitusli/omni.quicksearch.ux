@@ -53,6 +53,8 @@ CREATE_PROJECT_SUBFOLDERS = (
     "export/mesh",
     "sandbox",
 )
+PREVIEW_STAGE_FILENAMES = {"main.usd", "main.usda"}
+PREVIEW_IMAGE_FILENAME = "preview.png"
 
 README_TEMPLATE = """# Project Structure
 
@@ -105,9 +107,13 @@ class Extension(omni.ext.IExt):
         self._keyboard = None
         self._input = None
         self._hotkey_fallback_mode = False
+        self._ctrl_f_hotkey_registered = False
+        self._ctrl_8_hotkey_registered = False
         self._action_registry = None
         self._hotkey_registry = None
         self._snapshot_task = None
+        self._preview_capture_task = None
+        self._stage_event_sub = None
         self._exclusive = False
         self._expanded_paths = set()
         self._collapsed_paths = set()
@@ -137,6 +143,7 @@ class Extension(omni.ext.IExt):
         )
 
         self._snapshot_task = asyncio.ensure_future(self._capture_menu_snapshot())
+        self._register_stage_save_preview_hook()
         self._register_file_menu_entry()
         self._register_hotkeys()
         carb.log_info("[QuickSearchUX] Registered unified quick-search provider")
@@ -145,6 +152,10 @@ class Extension(omni.ext.IExt):
         if self._snapshot_task and not self._snapshot_task.done():
             self._snapshot_task.cancel()
         self._snapshot_task = None
+        if self._preview_capture_task and not self._preview_capture_task.done():
+            self._preview_capture_task.cancel()
+        self._preview_capture_task = None
+        self._deregister_stage_save_preview_hook()
         self._deregister_hotkeys()
         self._deregister_file_menu_entry()
         self._subscription = None
@@ -155,6 +166,129 @@ class Extension(omni.ext.IExt):
             self._window.destroy()
             self._window = None
         carb.log_info("[QuickSearchUX] Unregistered unified quick-search provider")
+
+    def _register_stage_save_preview_hook(self):
+        try:
+            event_stream = omni.usd.get_context().get_stage_event_stream()
+            self._stage_event_sub = event_stream.create_subscription_to_pop(
+                self._on_stage_event,
+                name="QuickSearchUX stage save preview",
+            )
+        except Exception as exc:
+            self._stage_event_sub = None
+            carb.log_warn(f"[QuickSearchUX] Could not subscribe to stage events: {exc}")
+
+    def _deregister_stage_save_preview_hook(self):
+        self._stage_event_sub = None
+
+    def _on_stage_event(self, event):
+        if not self._is_save_stage_event(event):
+            return
+
+        if self._preview_capture_task and not self._preview_capture_task.done():
+            self._preview_capture_task.cancel()
+
+        self._preview_capture_task = asyncio.ensure_future(self._capture_preview_for_saved_main_stage())
+
+    @staticmethod
+    def _is_save_stage_event(event) -> bool:
+        event_type = int(getattr(event, "type", -1))
+        save_event_names = (
+            "SAVED",
+            "SAVE_COMPLETED",
+            "SAVE_DONE",
+            "SAVE_AS_COMPLETED",
+        )
+        for name in save_event_names:
+            value = getattr(omni.usd.StageEventType, name, None)
+            if value is not None and event_type == int(value):
+                return True
+        return False
+
+    async def _capture_preview_for_saved_main_stage(self):
+        stage_path = self._get_current_stage_local_path()
+        if not stage_path:
+            return
+
+        if os.path.basename(stage_path).lower() not in PREVIEW_STAGE_FILENAMES:
+            return
+
+        preview_path = os.path.join(os.path.dirname(stage_path), PREVIEW_IMAGE_FILENAME)
+
+        app = omni.kit.app.get_app()
+        await app.next_update_async()
+        await app.next_update_async()
+
+        if await self._capture_active_viewport_to_file(preview_path):
+            carb.log_info(f"[QuickSearchUX] Updated preview image: {preview_path}")
+        else:
+            carb.log_warn("[QuickSearchUX] Could not capture viewport preview image")
+
+    @staticmethod
+    def _get_current_stage_local_path() -> str | None:
+        context = omni.usd.get_context()
+        stage_url = Extension._normalize_path(context.get_stage_url())
+        local_url = stage_url
+        if local_url.startswith("file://"):
+            local_url = local_url[7:]
+
+        if local_url and not local_url.startswith("anon:") and "://" not in local_url:
+            return os.path.abspath(local_url)
+
+        stage = context.get_stage()
+        if not stage:
+            return None
+
+        root_layer = stage.GetRootLayer()
+        if not root_layer:
+            return None
+
+        for field in ("realPath", "identifier"):
+            value = Extension._normalize_path(getattr(root_layer, field, ""))
+            if value.startswith("file://"):
+                value = value[7:]
+            if value and not value.startswith("anon:") and "://" not in value:
+                return os.path.abspath(value)
+
+        return None
+
+    @staticmethod
+    async def _capture_active_viewport_to_file(output_path: str) -> bool:
+        try:
+            from omni.kit.viewport.utility import capture_viewport_to_file, get_active_viewport
+        except Exception:
+            return False
+
+        viewport_api = get_active_viewport()
+        if viewport_api is None:
+            return False
+
+        camera_path = str(getattr(viewport_api, "camera_path", "") or "")
+        if camera_path and not camera_path.lower().endswith("persp"):
+            carb.log_warn(
+                f"[QuickSearchUX] Active viewport camera is not perspective: {camera_path}. Capturing anyway."
+            )
+
+        try:
+            capture_viewport_to_file(viewport_api, output_path)
+        except Exception as exc:
+            carb.log_warn(f"[QuickSearchUX] Viewport capture failed: {exc}")
+            return False
+
+        app = omni.kit.app.get_app()
+        for _ in range(30):
+            if os.path.exists(output_path):
+                try:
+                    if os.path.getsize(output_path) > 0:
+                        break
+                except Exception:
+                    pass
+            await app.next_update_async()
+        else:
+            carb.log_warn(f"[QuickSearchUX] Preview image was not created: {output_path}")
+            return False
+
+        return True
 
     def show_window(self):
         self._exclusive = True
@@ -504,6 +638,8 @@ class Extension(omni.ext.IExt):
         self._register_keyboard_fallback()
 
     def _register_ctrl_f_hotkey(self):
+        self._ctrl_f_hotkey_registered = False
+        self._ctrl_8_hotkey_registered = False
         try:
             from omni.kit.actions.core import get_action_registry
             from omni.kit.hotkeys.core import KeyCombination, get_hotkey_registry
@@ -533,17 +669,26 @@ class Extension(omni.ext.IExt):
 
             self._hotkey_registry = get_hotkey_registry()
             self._hotkey = self._hotkey_registry.register_hotkey(self._ext_id, key, self._ext_id, ACTION_ID)
+            self._ctrl_f_hotkey_registered = self._hotkey is not None
 
-            key_8_inputs = self._keyboard_inputs_for_digit_8()
-            if not key_8_inputs:
+            preferred_ctrl_8_key = self._preferred_keyboard_input_for_digit_8()
+            if preferred_ctrl_8_key is None:
                 carb.log_warn("[QuickSearchUX] Could not resolve keyboard enum for digit 8, using event fallback only")
-            for key_8 in key_8_inputs:
-                self._hotkey_registry.register_hotkey(
-                    self._ext_id,
-                    KeyCombination(key_8, carb.input.KEYBOARD_MODIFIER_FLAG_CONTROL),
-                    self._ext_id,
-                    LAYOUT_QUICK_LOAD_ACTION_ID,
-                )
+                self._ctrl_8_hotkey_registered = False
+            else:
+                try:
+                    ctrl_8_hotkey = self._hotkey_registry.register_hotkey(
+                        self._ext_id,
+                        KeyCombination(preferred_ctrl_8_key, carb.input.KEYBOARD_MODIFIER_FLAG_CONTROL),
+                        self._ext_id,
+                        LAYOUT_QUICK_LOAD_ACTION_ID,
+                    )
+                    self._ctrl_8_hotkey_registered = ctrl_8_hotkey is not None
+                except Exception as exc:
+                    carb.log_warn(f"[QuickSearchUX] Could not register Ctrl+8 hotkey: {exc}")
+                    self._ctrl_8_hotkey_registered = False
+            if not self._ctrl_f_hotkey_registered:
+                raise RuntimeError("Ctrl+F hotkey registration returned no handle")
             self._hotkey_fallback_mode = False
         except ImportError:
             self._hotkey_fallback_mode = True
@@ -637,6 +782,8 @@ class Extension(omni.ext.IExt):
                 carb.log_warn(f"[QuickSearchUX] Could not deregister hotkeys: {exc}")
             self._hotkey_registry = None
             self._hotkey = None
+            self._ctrl_f_hotkey_registered = False
+            self._ctrl_8_hotkey_registered = False
         if self._action_registry:
             try:
                 self._action_registry.deregister_all_actions_for_extension(self._ext_id)
@@ -670,31 +817,36 @@ class Extension(omni.ext.IExt):
             if self._is_plain_stage_backspace(event):
                 self._toggle_selected_prims_active_state()
 
-            if self._hotkey_fallback_mode:
-                is_ctrl_f = event.input == carb.input.KeyboardInput.F and bool(
-                    event.modifiers & carb.input.KEYBOARD_MODIFIER_FLAG_CONTROL
-                )
-                if is_ctrl_f:
-                    self.show_window()
+            use_ctrl_f_fallback = self._hotkey_fallback_mode or not self._ctrl_f_hotkey_registered
+            use_ctrl_8_fallback = self._hotkey_fallback_mode or not self._ctrl_8_hotkey_registered
 
-                is_ctrl_8 = bool(event.modifiers & carb.input.KEYBOARD_MODIFIER_FLAG_CONTROL) and self._is_digit_8_input(
-                    event.input
-                )
-                if is_ctrl_8:
-                    self._trigger_layout_quick_load()
+            is_ctrl_f = event.input == carb.input.KeyboardInput.F and bool(
+                event.modifiers & carb.input.KEYBOARD_MODIFIER_FLAG_CONTROL
+            )
+            if use_ctrl_f_fallback and is_ctrl_f:
+                self.show_window()
 
-                is_ctrl_shift_c = (
-                    event.input == carb.input.KeyboardInput.C
-                    and bool(event.modifiers & carb.input.KEYBOARD_MODIFIER_FLAG_CONTROL)
-                    and bool(event.modifiers & carb.input.KEYBOARD_MODIFIER_FLAG_SHIFT)
-                )
-                if is_ctrl_shift_c:
-                    self._copy_selected_prim_paths()
+            is_ctrl_8 = bool(event.modifiers & carb.input.KEYBOARD_MODIFIER_FLAG_CONTROL) and self._is_digit_8_input(
+                event.input
+            )
+            if use_ctrl_8_fallback and is_ctrl_8:
+                self._trigger_layout_quick_load()
+
+            is_ctrl_shift_c = (
+                event.input == carb.input.KeyboardInput.C
+                and bool(event.modifiers & carb.input.KEYBOARD_MODIFIER_FLAG_CONTROL)
+                and bool(event.modifiers & carb.input.KEYBOARD_MODIFIER_FLAG_SHIFT)
+            )
+            if self._hotkey_fallback_mode and is_ctrl_shift_c:
+                self._copy_selected_prim_paths()
         return True
 
     @staticmethod
     def _is_plain_stage_backspace(event) -> bool:
         if event.input != carb.input.KeyboardInput.BACKSPACE:
+            return False
+
+        if int(getattr(event, "modifiers", 0)) != 0:
             return False
 
         stage_window = ui.Workspace.get_window("Stage")
@@ -708,24 +860,7 @@ class Extension(omni.ext.IExt):
         if not has_focus:
             return False
 
-        disallowed_modifier_names = (
-            "KEYBOARD_MODIFIER_FLAG_SHIFT",
-            "KEYBOARD_MODIFIER_FLAG_CONTROL",
-            "KEYBOARD_MODIFIER_FLAG_ALT",
-            "KEYBOARD_MODIFIER_FLAG_SUPER",
-            "KEYBOARD_MODIFIER_FLAG_WINDOWS",
-            "KEYBOARD_MODIFIER_FLAG_COMMAND",
-            "KEYBOARD_MODIFIER_FLAG_META",
-            "KEYBOARD_MODIFIER_FLAG_FUNCTION",
-            "KEYBOARD_MODIFIER_FLAG_FN",
-        )
-        disallowed_modifiers = 0
-        for name in disallowed_modifier_names:
-            flag = getattr(carb.input, name, None)
-            if flag is not None:
-                disallowed_modifiers |= int(flag)
-
-        return not bool(int(event.modifiers) & disallowed_modifiers)
+        return True
 
     @staticmethod
     def _keyboard_inputs_for_digit_8() -> list:
@@ -749,6 +884,15 @@ class Extension(omni.ext.IExt):
             seen.add(key_id)
             values.append(key)
         return values
+
+    @staticmethod
+    def _preferred_keyboard_input_for_digit_8():
+        preferred_names = ("KEY_8", "NUMPAD_8", "NUM_8", "KP_8", "D8", "_8")
+        for name in preferred_names:
+            key = getattr(carb.input.KeyboardInput, name, None)
+            if key is not None:
+                return key
+        return None
 
     @staticmethod
     def _is_digit_8_input(key_input) -> bool:
