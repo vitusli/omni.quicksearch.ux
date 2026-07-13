@@ -1,5 +1,7 @@
 import asyncio
 import os
+import tempfile
+from urllib.parse import unquote, urlparse
 
 import carb
 import carb.input
@@ -193,64 +195,129 @@ class Extension(omni.ext.IExt):
     @staticmethod
     def _is_save_stage_event(event) -> bool:
         event_type = int(getattr(event, "type", -1))
-        save_event_names = (
-            "SAVED",
-            "SAVE_COMPLETED",
-            "SAVE_DONE",
-            "SAVE_AS_COMPLETED",
-        )
-        for name in save_event_names:
+        for name in dir(omni.usd.StageEventType):
+            if "SAVE" not in name.upper() or name.startswith("_"):
+                continue
             value = getattr(omni.usd.StageEventType, name, None)
             if value is not None and event_type == int(value):
                 return True
         return False
 
     async def _capture_preview_for_saved_main_stage(self):
-        stage_path = self._get_current_stage_local_path()
-        if not stage_path:
+        preview_target, is_remote_target = self._get_preview_target_for_current_stage()
+        if not preview_target:
             return
-
-        if os.path.basename(stage_path).lower() not in PREVIEW_STAGE_FILENAMES:
-            return
-
-        preview_path = os.path.join(os.path.dirname(stage_path), PREVIEW_IMAGE_FILENAME)
 
         app = omni.kit.app.get_app()
         await app.next_update_async()
         await app.next_update_async()
 
-        if await self._capture_active_viewport_to_file(preview_path):
-            carb.log_info(f"[QuickSearchUX] Updated preview image: {preview_path}")
+        if is_remote_target:
+            temp_preview_path = os.path.join(tempfile.gettempdir(), f"quicksearchux_preview_{os.getpid()}.png")
+            capture_ok = await self._capture_active_viewport_to_file(temp_preview_path)
+            write_ok = capture_ok and self._write_binary_file_to_omni_url(temp_preview_path, preview_target)
+            try:
+                if os.path.exists(temp_preview_path):
+                    os.remove(temp_preview_path)
+            except Exception:
+                pass
+            success = bool(write_ok)
+        else:
+            success = await self._capture_active_viewport_to_file(preview_target)
+
+        if success:
+            carb.log_info(f"[QuickSearchUX] Updated preview image: {preview_target}")
         else:
             carb.log_warn("[QuickSearchUX] Could not capture viewport preview image")
 
     @staticmethod
-    def _get_current_stage_local_path() -> str | None:
+    def _get_preview_target_for_current_stage() -> tuple[str | None, bool]:
         context = omni.usd.get_context()
-        stage_url = Extension._normalize_path(context.get_stage_url())
-        local_url = stage_url
-        if local_url.startswith("file://"):
-            local_url = local_url[7:]
-
-        if local_url and not local_url.startswith("anon:") and "://" not in local_url:
-            return os.path.abspath(local_url)
+        stage_refs = [Extension._normalize_path(context.get_stage_url())]
 
         stage = context.get_stage()
-        if not stage:
+        if stage:
+            root_layer = stage.GetRootLayer()
+            if root_layer:
+                stage_refs.append(Extension._normalize_path(getattr(root_layer, "realPath", "")))
+                stage_refs.append(Extension._normalize_path(getattr(root_layer, "identifier", "")))
+
+        for stage_ref in stage_refs:
+            target = Extension._preview_target_from_stage_reference(stage_ref)
+            if target is not None:
+                return target
+
+        return None, False
+
+    @staticmethod
+    def _preview_target_from_stage_reference(stage_ref: str) -> tuple[str, bool] | None:
+        value = Extension._normalize_path(stage_ref)
+        if not value or value.startswith("anon:"):
             return None
 
-        root_layer = stage.GetRootLayer()
-        if not root_layer:
+        local_path = Extension._to_local_filesystem_path(value)
+        if local_path:
+            if os.path.basename(local_path).lower() not in PREVIEW_STAGE_FILENAMES:
+                return None
+            return os.path.join(os.path.dirname(local_path), PREVIEW_IMAGE_FILENAME), False
+
+        parsed = urlparse(value)
+        if not parsed.scheme or not parsed.netloc:
             return None
 
-        for field in ("realPath", "identifier"):
-            value = Extension._normalize_path(getattr(root_layer, field, ""))
-            if value.startswith("file://"):
-                value = value[7:]
-            if value and not value.startswith("anon:") and "://" not in value:
-                return os.path.abspath(value)
+        stage_path = unquote(parsed.path or "")
+        stage_name = stage_path.rsplit("/", 1)[-1].lower() if stage_path else ""
+        if stage_name not in PREVIEW_STAGE_FILENAMES:
+            return None
 
-        return None
+        stage_dir = stage_path.rsplit("/", 1)[0] if "/" in stage_path else ""
+        preview_remote_path = f"{stage_dir}/{PREVIEW_IMAGE_FILENAME}" if stage_dir else f"/{PREVIEW_IMAGE_FILENAME}"
+        target_url = f"{parsed.scheme}://{parsed.netloc}{preview_remote_path}"
+        return target_url, True
+
+    @staticmethod
+    def _write_binary_file_to_omni_url(local_file_path: str, destination_url: str) -> bool:
+        try:
+            with open(local_file_path, "rb") as source_stream:
+                payload = source_stream.read()
+        except Exception as exc:
+            carb.log_warn(f"[QuickSearchUX] Could not read temporary preview image: {exc}")
+            return False
+
+        try:
+            result = omni.client.write_file(destination_url, payload)
+            if Extension._omni_result_ok(result):
+                return True
+            carb.log_warn(f"[QuickSearchUX] Could not write preview image to {destination_url}: {result}")
+            return False
+        except Exception as exc:
+            carb.log_warn(f"[QuickSearchUX] Could not write preview image to {destination_url}: {exc}")
+            return False
+
+    @staticmethod
+    def _to_local_filesystem_path(path_or_url: str) -> str | None:
+        value = Extension._normalize_path(path_or_url)
+        if not value or value.startswith("anon:"):
+            return None
+
+        if value.lower().startswith("file:"):
+            parsed = urlparse(value)
+            decoded_path = unquote(parsed.path or "")
+
+            if parsed.netloc and parsed.netloc not in ("", "localhost"):
+                unc_path = f"//{parsed.netloc}{decoded_path}"
+                return os.path.abspath(unc_path)
+
+            if len(decoded_path) >= 3 and decoded_path[0] == "/" and decoded_path[2] == ":":
+                decoded_path = decoded_path[1:]
+
+            decoded_path = decoded_path.replace("/", os.sep)
+            return os.path.abspath(decoded_path)
+
+        if "://" in value:
+            return None
+
+        return os.path.abspath(value)
 
     @staticmethod
     async def _capture_active_viewport_to_file(output_path: str) -> bool:
