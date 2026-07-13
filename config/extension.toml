@@ -23,6 +23,9 @@ readme = "README.md"
 "omni.kit.context_menu" = {}
 "omni.kit.commands" = {}
 "omni.usd" = {}
+"omni.kit.window.filepicker" = {}
+"omni.kit.widget.filebrowser" = {}
+"omni.client" = {}
 "omni.physx.commands" = { optional = true }
 "omni.kit.primitive.mesh" = { optional = true }
 
