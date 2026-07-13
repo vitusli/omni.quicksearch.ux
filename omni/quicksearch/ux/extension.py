@@ -104,6 +104,7 @@ class Extension(omni.ext.IExt):
         self._keyboard_sub_id = None
         self._keyboard = None
         self._input = None
+        self._hotkey_fallback_mode = False
         self._action_registry = None
         self._hotkey_registry = None
         self._snapshot_task = None
@@ -500,6 +501,7 @@ class Extension(omni.ext.IExt):
     def _register_hotkeys(self):
         self._register_ctrl_f_hotkey()
         self._register_stage_arrow_hotkeys()
+        self._register_keyboard_fallback()
 
     def _register_ctrl_f_hotkey(self):
         try:
@@ -542,10 +544,13 @@ class Extension(omni.ext.IExt):
                     self._ext_id,
                     LAYOUT_QUICK_LOAD_ACTION_ID,
                 )
+            self._hotkey_fallback_mode = False
         except ImportError:
+            self._hotkey_fallback_mode = True
             self._register_keyboard_fallback()
         except Exception as exc:
             carb.log_warn(f"[QuickSearchUX] Could not register Ctrl+F hotkey: {exc}")
+            self._hotkey_fallback_mode = True
             self._register_keyboard_fallback()
 
     def _register_stage_arrow_hotkeys(self):
@@ -574,8 +579,8 @@ class Extension(omni.ext.IExt):
                     TOGGLE_SELECTED_PRIMS_ACTIVE_STATE_ACTION_DISPLAY_NAME,
                     "Toggle active state for selected prims.",
                     self._toggle_selected_prims_active_state,
-                    carb.input.KeyboardInput.BACKSPACE,
-                    0,
+                    None,
+                    None,
                 ),
                 (
                     "collapse_current_hierarchy",
@@ -613,13 +618,14 @@ class Extension(omni.ext.IExt):
                     description=description,
                     tag="Quick Search UX",
                 )
-                hotkey_registry.register_hotkey(
-                    self._extension_name,
-                    KeyCombination(key, modifiers),
-                    self._extension_name,
-                    action_id,
-                    filter=hotkey_filter,
-                )
+                if key is not None and modifiers is not None:
+                    hotkey_registry.register_hotkey(
+                        self._extension_name,
+                        KeyCombination(key, modifiers),
+                        self._extension_name,
+                        action_id,
+                        filter=hotkey_filter,
+                    )
         except Exception as exc:
             carb.log_warn(f"[QuickSearchUX] Could not register Stage arrow hotkeys: {exc}")
 
@@ -661,26 +667,65 @@ class Extension(omni.ext.IExt):
 
     def _on_keyboard_event(self, event):
         if event.type == carb.input.KeyboardEventType.KEY_PRESS:
-            is_ctrl_f = event.input == carb.input.KeyboardInput.F and bool(
-                event.modifiers & carb.input.KEYBOARD_MODIFIER_FLAG_CONTROL
-            )
-            if is_ctrl_f:
-                self.show_window()
+            if self._is_plain_stage_backspace(event):
+                self._toggle_selected_prims_active_state()
 
-            is_ctrl_8 = bool(event.modifiers & carb.input.KEYBOARD_MODIFIER_FLAG_CONTROL) and self._is_digit_8_input(
-                event.input
-            )
-            if is_ctrl_8:
-                self._trigger_layout_quick_load()
+            if self._hotkey_fallback_mode:
+                is_ctrl_f = event.input == carb.input.KeyboardInput.F and bool(
+                    event.modifiers & carb.input.KEYBOARD_MODIFIER_FLAG_CONTROL
+                )
+                if is_ctrl_f:
+                    self.show_window()
 
-            is_ctrl_shift_c = (
-                event.input == carb.input.KeyboardInput.C
-                and bool(event.modifiers & carb.input.KEYBOARD_MODIFIER_FLAG_CONTROL)
-                and bool(event.modifiers & carb.input.KEYBOARD_MODIFIER_FLAG_SHIFT)
-            )
-            if is_ctrl_shift_c:
-                self._copy_selected_prim_paths()
+                is_ctrl_8 = bool(event.modifiers & carb.input.KEYBOARD_MODIFIER_FLAG_CONTROL) and self._is_digit_8_input(
+                    event.input
+                )
+                if is_ctrl_8:
+                    self._trigger_layout_quick_load()
+
+                is_ctrl_shift_c = (
+                    event.input == carb.input.KeyboardInput.C
+                    and bool(event.modifiers & carb.input.KEYBOARD_MODIFIER_FLAG_CONTROL)
+                    and bool(event.modifiers & carb.input.KEYBOARD_MODIFIER_FLAG_SHIFT)
+                )
+                if is_ctrl_shift_c:
+                    self._copy_selected_prim_paths()
         return True
+
+    @staticmethod
+    def _is_plain_stage_backspace(event) -> bool:
+        if event.input != carb.input.KeyboardInput.BACKSPACE:
+            return False
+
+        stage_window = ui.Workspace.get_window("Stage")
+        if not stage_window:
+            return False
+
+        has_focus = getattr(stage_window, "focused", None)
+        if has_focus is None:
+            has_focus_fn = getattr(stage_window, "has_focus", None)
+            has_focus = bool(has_focus_fn()) if callable(has_focus_fn) else True
+        if not has_focus:
+            return False
+
+        disallowed_modifier_names = (
+            "KEYBOARD_MODIFIER_FLAG_SHIFT",
+            "KEYBOARD_MODIFIER_FLAG_CONTROL",
+            "KEYBOARD_MODIFIER_FLAG_ALT",
+            "KEYBOARD_MODIFIER_FLAG_SUPER",
+            "KEYBOARD_MODIFIER_FLAG_WINDOWS",
+            "KEYBOARD_MODIFIER_FLAG_COMMAND",
+            "KEYBOARD_MODIFIER_FLAG_META",
+            "KEYBOARD_MODIFIER_FLAG_FUNCTION",
+            "KEYBOARD_MODIFIER_FLAG_FN",
+        )
+        disallowed_modifiers = 0
+        for name in disallowed_modifier_names:
+            flag = getattr(carb.input, name, None)
+            if flag is not None:
+                disallowed_modifiers |= int(flag)
+
+        return not bool(int(event.modifiers) & disallowed_modifiers)
 
     @staticmethod
     def _keyboard_inputs_for_digit_8() -> list:
