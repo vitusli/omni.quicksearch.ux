@@ -52,10 +52,16 @@ class PreviewCaptureHandler:
         if not self._is_save_stage_event(event):
             return
 
+        preview_target, is_remote_target = self._get_preview_target_for_current_stage()
+        if not preview_target:
+            return
+
         if self._capture_task and not self._capture_task.done():
             self._capture_task.cancel()
 
-        self._capture_task = asyncio.ensure_future(self._capture_preview_for_saved_main_stage())
+        self._capture_task = asyncio.ensure_future(
+            self._capture_preview_for_saved_main_stage(preview_target, is_remote_target)
+        )
 
     @staticmethod
     def _is_save_stage_event(event) -> bool:
@@ -68,11 +74,9 @@ class PreviewCaptureHandler:
                 return True
         return False
 
-    async def _capture_preview_for_saved_main_stage(self):
-        preview_target, is_remote_target = self._get_preview_target_for_current_stage()
-        if not preview_target:
-            return
-
+    async def _capture_preview_for_saved_main_stage(
+        self, preview_target: str, is_remote_target: bool
+    ):
         app = omni.kit.app.get_app()
         await app.next_update_async()
         await app.next_update_async()
