@@ -23,6 +23,11 @@ actions apply relative to the current selection.
 
 Triggers `Layout > Quick Load` from the menu bar.
 
+### Focused Window Maximize Toggle (`Shift+Space`)
+
+Temporarily maximizes the currently focused dock/window. Press `Shift+Space`
+again to restore its previous size/position.
+
 ### Stage Navigation (Stage window focused)
 
 | Key                  | Action                                    |
