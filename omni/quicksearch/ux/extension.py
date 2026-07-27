@@ -25,6 +25,7 @@ from .model import UnifiedQuickSearchModel
 from .paths import normalize_path
 from .preview_capture import PreviewCaptureHandler
 from .stage_navigation import StageNavigationHandler
+from .window_toggle import WindowMaximizeToggle
 
 
 class Extension(omni.ext.IExt):
@@ -40,6 +41,7 @@ class Extension(omni.ext.IExt):
         self._create_project = None
         self._stage_nav = None
         self._hotkeys = None
+        self._window_toggle = None
         self._snapshot_task = None
 
     # -- lifecycle ------------------------------------------------------------
@@ -58,12 +60,14 @@ class Extension(omni.ext.IExt):
         self._preview_capture = PreviewCaptureHandler()
         self._create_project = CreateProjectHandler(gridroom_asset_source)
         self._stage_nav = StageNavigationHandler()
+        self._window_toggle = WindowMaximizeToggle()
         self._hotkeys = HotkeyManager(
             self._ext_id,
             show_window=self.show_window,
             stage_nav=self._stage_nav,
             get_menu_trigger_map=lambda: self._menu_snapshot.trigger_map,
             capture_menu_snapshot=self._menu_snapshot.capture_once,
+            window_toggle=self._window_toggle,
         )
 
         self._subscription = QuickSearchRegistry().register_quick_search_model(
@@ -95,6 +99,8 @@ class Extension(omni.ext.IExt):
             self._create_project.deregister_menu_entry()
         if self._stage_nav:
             self._stage_nav.reset()
+        if self._window_toggle:
+            self._window_toggle.reset()
 
         self._subscription = None
         if self._window:

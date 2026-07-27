@@ -29,6 +29,9 @@ LAYOUT_QUICK_LOAD_PATH_CANDIDATES = (
     ("Quicklayout", "Quicklayout Quick Load"),
 )
 
+MAXIMIZE_WINDOW_ACTION_ID = "ToggleMaximizeHoveredWindow"
+MAXIMIZE_WINDOW_ACTION_DISPLAY_NAME = "Toggle Maximize Hovered Window"
+
 COPY_SELECTED_PRIMS_ACTION_ID = "CopySelectedPrimPaths"
 COPY_SELECTED_PRIMS_ACTION_DISPLAY_NAME = "Stage->Copy Selected Prim Paths"
 TOGGLE_SELECTED_PRIMS_ACTIVE_STATE_ACTION_ID = "ToggleSelectedPrimActiveState"
@@ -39,12 +42,13 @@ class HotkeyManager:
     """Owns action/hotkey registration and the keyboard-event fallback."""
 
     def __init__(self, ext_id: str, *, show_window, stage_nav, get_menu_trigger_map,
-                 capture_menu_snapshot):
+                 capture_menu_snapshot, window_toggle=None):
         self._ext_id = ext_id
         self._show_window = show_window
         self._stage_nav = stage_nav
         self._get_menu_trigger_map = get_menu_trigger_map
         self._capture_menu_snapshot = capture_menu_snapshot
+        self._window_toggle = window_toggle
 
         self._action_registry = None
         self._hotkey_registry = None
@@ -52,6 +56,7 @@ class HotkeyManager:
         self._hotkey_fallback_mode = False
         self._ctrl_f_hotkey_registered = False
         self._ctrl_8_hotkey_registered = False
+        self._maximize_hotkey_registered = False
 
         self._keyboard = None
         self._input = None
@@ -61,6 +66,7 @@ class HotkeyManager:
 
     def register(self):
         self._register_ctrl_f_hotkey()
+        self._register_maximize_hotkey()
         self._register_stage_hotkeys()
         self._register_keyboard_fallback()
 
@@ -74,6 +80,7 @@ class HotkeyManager:
             self._hotkey = None
             self._ctrl_f_hotkey_registered = False
             self._ctrl_8_hotkey_registered = False
+            self._maximize_hotkey_registered = False
         if self._action_registry:
             try:
                 self._action_registry.deregister_all_actions_for_extension(self._ext_id)
@@ -156,6 +163,42 @@ class HotkeyManager:
         except Exception as exc:
             carb.log_warn(f"[QuickSearchUX] Could not register Ctrl+8 hotkey: {exc}")
             self._ctrl_8_hotkey_registered = False
+
+    # -- Shift+Space maximize -------------------------------------------------
+
+    def _register_maximize_hotkey(self):
+        self._maximize_hotkey_registered = False
+        if self._window_toggle is None:
+            return
+        try:
+            from omni.kit.actions.core import get_action_registry
+            from omni.kit.hotkeys.core import KeyCombination, get_hotkey_registry
+
+            if self._action_registry is None:
+                self._action_registry = get_action_registry()
+            self._action_registry.register_action(
+                self._ext_id,
+                MAXIMIZE_WINDOW_ACTION_ID,
+                self._window_toggle.toggle,
+                display_name=MAXIMIZE_WINDOW_ACTION_DISPLAY_NAME,
+                description="Maximize the window under the cursor, or restore the layout",
+                tag="Quick Search UX",
+            )
+
+            if self._hotkey_registry is None:
+                self._hotkey_registry = get_hotkey_registry()
+            key = KeyCombination(
+                carb.input.KeyboardInput.SPACE, carb.input.KEYBOARD_MODIFIER_FLAG_SHIFT
+            )
+            handle = self._hotkey_registry.register_hotkey(
+                self._ext_id, key, self._ext_id, MAXIMIZE_WINDOW_ACTION_ID
+            )
+            self._maximize_hotkey_registered = handle is not None
+        except ImportError:
+            self._maximize_hotkey_registered = False
+        except Exception as exc:
+            carb.log_warn(f"[QuickSearchUX] Could not register Shift+Space hotkey: {exc}")
+            self._maximize_hotkey_registered = False
 
     # -- Stage hotkeys --------------------------------------------------------
 
@@ -311,6 +354,15 @@ class HotkeyManager:
 
             if use_ctrl_8_fallback and has_ctrl and self._is_digit_8_input(event.input):
                 self.trigger_layout_quick_load()
+
+            use_maximize_fallback = self._hotkey_fallback_mode or not self._maximize_hotkey_registered
+            is_shift_space = (
+                event.input == carb.input.KeyboardInput.SPACE
+                and bool(event.modifiers & carb.input.KEYBOARD_MODIFIER_FLAG_SHIFT)
+                and not has_ctrl
+            )
+            if use_maximize_fallback and is_shift_space and self._window_toggle is not None:
+                self._window_toggle.toggle()
 
             is_ctrl_shift_c = (
                 event.input == carb.input.KeyboardInput.C
