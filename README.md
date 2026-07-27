@@ -47,18 +47,22 @@ the gridroom environment asset, and a base USD stage saved as
 
 ### Make All Paths Relative (`File > Make all paths relative`)
 
-Scans stage-scoped used layers and previews all asset-path rewrites before
-applying. The preview is grouped into collect-candidates and direct-relative
-candidates.
+Scans stage-scoped used layers and shows a grouped preview table (per layer)
+with a details panel before applying any change.
 
 - Rewrites paths in:
   - sublayers
   - references
   - payloads
-  - asset-typed attribute defaults (for example `info:mdl:sourceAsset`)
-- Supports optional collect for online/outside-root assets:
-  - copies them into `omniverse/_collected_external_assets/`
-  - rewrites the source path to a relative path from the owning layer
+  - asset-typed attributes, including default values and time samples
+    (for example `info:mdl:sourceAsset` and material texture inputs)
+- Supports optional collect for online / outside-root assets:
+  - USD references/payloads/sublayers are collected with the official
+    `omni.kit.usd.collect` tool, so all sub-dependencies (textures, MDL,
+    nested USD) are collected and re-mapped correctly
+  - single non-USD assets are downloaded directly
+  - collected assets are placed under `omniverse/_collected_external_assets/`
+    and the owning path is rewritten to a relative path
 - Skips anonymous layers and layers outside the current root stage scope.
 - Prints detailed debug and change logs to the terminal/log output.
 

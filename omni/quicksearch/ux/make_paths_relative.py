@@ -4,6 +4,7 @@ Shows a preview popup with all candidate path rewrites. Optionally collects
 online/external assets into the root layer folder before rewriting paths.
 """
 
+import asyncio
 import hashlib
 import os
 import posixpath
@@ -41,6 +42,146 @@ class _PathCandidate:
     apply_fn: callable
 
 
+_COL_STYLE = {
+    "Rectangle::row_even": {"background_color": 0xFF2A2A2A},
+    "Rectangle::row_odd": {"background_color": 0xFF242424},
+    "Rectangle::row_sel": {"background_color": 0xFF3A5A78},
+    "Rectangle::header_bg": {"background_color": 0xFF1B1B1B},
+    "Rectangle::group_bg": {"background_color": 0xFF303030},
+    "Label::header": {"color": 0xFFBBBBBB, "font_size": 13},
+    "Label::group": {"color": 0xFFE0E0E0, "font_size": 14},
+    "Label::cell": {"color": 0xFFD0D0D0, "font_size": 13},
+    "Label::badge_collect": {"color": 0xFF66B2FF, "font_size": 13},
+    "Label::badge_relative": {"color": 0xFF8FD08F, "font_size": 13},
+    "Label::detail_key": {"color": 0xFF9A9A9A, "font_size": 13},
+    "Label::detail_val": {"color": 0xFFEAEAEA, "font_size": 13},
+    "Rectangle::detail_bg": {"background_color": 0xFF1E1E1E},
+}
+
+
+class _GroupRow(ui.AbstractItem):
+    """A layer-group header row."""
+
+    def __init__(self, layer_name: str, count: int):
+        super().__init__()
+        self.layer_name = layer_name
+        self.count = count
+
+
+class _CandidateRow(ui.AbstractItem):
+    """A single candidate row bound to a _PathCandidate."""
+
+    def __init__(self, number: int, candidate: _PathCandidate):
+        super().__init__()
+        self.number = number
+        self.candidate = candidate
+
+
+class _CandidateTableModel(ui.AbstractItemModel):
+    """Flat model with interleaved group-header rows and candidate rows."""
+
+    COLUMNS = ("#", "Type", "Kind", "Prim / Attribute", "Reason", "Status")
+
+    def __init__(self, candidates: list[_PathCandidate]):
+        super().__init__()
+        self._rows: list = []
+        by_layer: dict[str, list[_PathCandidate]] = {}
+        for cand in candidates:
+            by_layer.setdefault(cand.layer_name, []).append(cand)
+
+        number = 0
+        for layer_name in sorted(by_layer.keys()):
+            group_items = sorted(
+                by_layer[layer_name], key=lambda c: (c.kind, c.owner_path, c.old_path)
+            )
+            self._rows.append(_GroupRow(layer_name, len(group_items)))
+            for cand in group_items:
+                number += 1
+                self._rows.append(_CandidateRow(number, cand))
+
+    def get_item_children(self, item):
+        if item is not None:
+            return []
+        return self._rows
+
+    def get_item_value_model_count(self, item):
+        return len(self.COLUMNS)
+
+    def get_item_value_model(self, item, column_id: int):
+        return None
+
+
+class _CandidateTableDelegate(ui.AbstractItemDelegate):
+    """Renders group headers and candidate rows with zebra striping."""
+
+    COLUMN_WIDTHS = (44, 90, 200, ui.Fraction(1.0), 130, 120)
+
+    def __init__(self, on_select):
+        super().__init__()
+        self._on_select = on_select
+        self._row_counter = 0
+
+    def build_branch(self, model, item, column_id, level, expanded):
+        return
+
+    def build_header(self, column_id: int = 0):
+        with ui.ZStack(height=26):
+            ui.Rectangle(name="header_bg")
+            with ui.HStack():
+                ui.Spacer(width=8)
+                ui.Label(_CandidateTableModel.COLUMNS[column_id], name="header")
+
+    def build_widget(self, model, item, column_id, level, expanded):
+        if isinstance(item, _GroupRow):
+            self._build_group_cell(item, column_id)
+        elif isinstance(item, _CandidateRow):
+            self._build_candidate_cell(item, column_id)
+
+    def _build_group_cell(self, item: _GroupRow, column_id: int):
+        with ui.ZStack(height=28):
+            ui.Rectangle(name="group_bg")
+            if column_id == 0:
+                with ui.HStack():
+                    ui.Spacer(width=8)
+                    leaf = os.path.basename(item.layer_name) or item.layer_name
+                    ui.Label(
+                        f"{leaf}   ({item.count})",
+                        name="group",
+                        tooltip=item.layer_name,
+                    )
+
+    def _build_candidate_cell(self, item: _CandidateRow, column_id: int):
+        cand = item.candidate
+        row_bg = "row_even" if item.number % 2 == 0 else "row_odd"
+
+        with ui.ZStack(height=26):
+            ui.Rectangle(name=row_bg)
+            btn = ui.InvisibleButton()
+            btn.set_mouse_pressed_fn(lambda x, y, b, m, _c=cand: self._on_select(_c))
+
+            with ui.HStack():
+                ui.Spacer(width=8)
+                if column_id == 0:
+                    ui.Label(str(item.number), name="cell")
+                elif column_id == 1:
+                    if cand.collect_recommended:
+                        ui.Label("collect", name="badge_collect")
+                    else:
+                        ui.Label("relative", name="badge_relative")
+                elif column_id == 2:
+                    ui.Label(cand.kind, name="cell", tooltip=cand.kind)
+                elif column_id == 3:
+                    owner = cand.owner_path
+                    ui.Label(owner, name="cell", tooltip=owner)
+                elif column_id == 4:
+                    ui.Label(cand.collect_reason or "-", name="cell")
+                elif column_id == 5:
+                    if cand.collect_recommended and not cand.can_make_relative:
+                        ui.Label("needs collect", name="cell")
+                    else:
+                        ui.Label("ready", name="cell")
+
+
 class MakePathsRelativeHandler:
     """Registers ``File > Make all paths relative`` and executes the rewrite."""
 
@@ -49,6 +190,9 @@ class MakePathsRelativeHandler:
         self._message_window = None
         self._preview_window = None
         self._collect_checkbox_model = None
+        self._preview_model = None
+        self._preview_delegate = None
+        self._preview_detail_models = None
 
     def register_menu_entry(self):
         try:
@@ -114,86 +258,164 @@ class MakePathsRelativeHandler:
             )
 
     def _show_preview(self, candidates: list[_PathCandidate], root_location: str):
-        if self._preview_window:
-            try:
-                self._preview_window.visible = False
-            except Exception:
-                pass
+        self._close_preview()
 
         collect_candidates = [c for c in candidates if c.collect_recommended]
         direct_candidates = [c for c in candidates if not c.collect_recommended]
         default_collect = bool(collect_candidates)
 
-        collect_candidates.sort(key=lambda c: (c.layer_name, c.kind, c.owner_path, c.old_path))
-        direct_candidates.sort(key=lambda c: (c.layer_name, c.kind, c.owner_path, c.old_path))
+        collect_target = _Collector.preview_target_dir(root_location)
 
         self._preview_window = ui.Window(
-            "Make all paths relative - Preview",
-            width=1220,
-            height=820,
+            "Make all paths relative",
+            width=1180,
+            height=760,
             flags=ui.WINDOW_FLAGS_MODAL,
         )
 
         collect_model = ui.SimpleBoolModel(default_collect)
         self._collect_checkbox_model = collect_model
 
+        detail_owner = ui.SimpleStringModel("")
+        detail_layer = ui.SimpleStringModel("")
+        detail_from = ui.SimpleStringModel("")
+        detail_to = ui.SimpleStringModel("")
+
+        def _on_select(cand: _PathCandidate):
+            target = cand.proposed_path if cand.can_make_relative else "(will be resolved after collect)"
+            detail_owner.set_value(cand.owner_path)
+            detail_layer.set_value(cand.layer_name)
+            detail_from.set_value(cand.old_path)
+            detail_to.set_value(target)
+
+        model = _CandidateTableModel(candidates)
+        delegate = _CandidateTableDelegate(_on_select)
+        # Keep strong references so the C++ side does not GC the Python model.
+        self._preview_model = model
+        self._preview_delegate = delegate
+        self._preview_detail_models = (detail_owner, detail_layer, detail_from, detail_to)
+
         with self._preview_window.frame:
-            with ui.VStack(spacing=8):
-                ui.Label(f"Found {len(candidates)} candidate path rewrite(s)", word_wrap=True)
-                with ui.HStack(height=24, spacing=12):
-                    ui.Label(f"Collect candidates: {len(collect_candidates)}", width=240)
-                    ui.Label(f"Direct relative: {len(direct_candidates)}", width=240)
-                    ui.Label(f"Root: {self._clip(root_location, 120)}", word_wrap=True)
+            with ui.VStack(spacing=0, style=_COL_STYLE):
+                # ---- Summary bar ----
+                with ui.ZStack(height=64):
+                    ui.Rectangle(name="header_bg")
+                    with ui.HStack():
+                        ui.Spacer(width=12)
+                        with ui.VStack(spacing=4):
+                            ui.Spacer(height=8)
+                            ui.Label(
+                                f"{len(candidates)} path(s) can be rewritten",
+                                name="group",
+                            )
+                            ui.Label(
+                                f"Root: {root_location}",
+                                name="detail_key",
+                                tooltip=root_location,
+                            )
+                            ui.Spacer(height=8)
+                        with ui.VStack(width=280, spacing=4):
+                            ui.Spacer(height=10)
+                            ui.Label(
+                                f"Collect candidates: {len(collect_candidates)}",
+                                name="badge_collect",
+                            )
+                            ui.Label(
+                                f"Direct relative: {len(direct_candidates)}",
+                                name="badge_relative",
+                            )
+                            ui.Spacer(height=10)
+                        ui.Spacer(width=12)
 
-                if collect_candidates:
-                    with ui.HStack(height=26, spacing=8):
-                        ui.CheckBox(model=collect_model, width=24)
+                ui.Spacer(height=6)
+
+                # ---- Collect option ----
+                with ui.HStack(height=26):
+                    ui.Spacer(width=12)
+                    if collect_candidates:
+                        ui.CheckBox(model=collect_model, width=22)
                         ui.Label(
-                            "Collect online/external assets before rewriting",
-                            word_wrap=True,
+                            "Collect online / outside-root assets into "
+                            f"'{os.path.basename(collect_target)}' before rewriting",
+                            name="cell",
+                            tooltip=collect_target,
                         )
-                else:
-                    ui.Label("No online/external paths detected. Collect is not needed.")
-
-                with ui.ScrollingFrame(height=650):
-                    with ui.VStack(spacing=6):
-                        ui.Label("Collect candidates (online/outside-root)")
-                        self._render_table_header()
-                        if collect_candidates:
-                            for index, candidate in enumerate(collect_candidates, start=1):
-                                self._render_candidate_row(index, candidate)
-                        else:
-                            ui.Label("- none -")
-
-                        ui.Spacer(height=8)
-                        ui.Label("Direct relative candidates")
-                        self._render_table_header()
-                        if direct_candidates:
-                            for index, candidate in enumerate(direct_candidates, start=1):
-                                self._render_candidate_row(index, candidate)
-                        else:
-                            ui.Label("- none -")
-
-                with ui.HStack(height=28):
+                    else:
+                        ui.Label(
+                            "No online / external paths detected. Collect not needed.",
+                            name="cell",
+                        )
                     ui.Spacer()
 
-                    def _cancel():
-                        if self._preview_window:
-                            self._preview_window.visible = False
-                            self._preview_window = None
+                ui.Spacer(height=6)
+
+                # ---- Table ----
+                with ui.ScrollingFrame(
+                    height=ui.Fraction(1),
+                    horizontal_scrollbar_policy=ui.ScrollBarPolicy.SCROLLBAR_ALWAYS_OFF,
+                ):
+                    ui.TreeView(
+                        model,
+                        delegate=delegate,
+                        root_visible=False,
+                        header_visible=True,
+                        column_widths=list(delegate.COLUMN_WIDTHS),
+                    )
+
+                # ---- Detail panel ----
+                with ui.ZStack(height=104):
+                    ui.Rectangle(name="detail_bg")
+                    with ui.HStack():
+                        ui.Spacer(width=12)
+                        with ui.VStack(spacing=3):
+                            ui.Spacer(height=6)
+                            self._detail_line("Prim:", detail_owner)
+                            self._detail_line("Layer:", detail_layer)
+                            self._detail_line("From:", detail_from)
+                            self._detail_line("To:", detail_to)
+                            ui.Spacer(height=6)
+                        ui.Spacer(width=12)
+
+                # ---- Buttons ----
+                with ui.HStack(height=44):
+                    ui.Spacer()
 
                     def _apply():
                         do_collect = bool(collect_model.as_bool)
-                        if self._preview_window:
-                            self._preview_window.visible = False
-                            self._preview_window = None
                         self._debug(f"apply_clicked collect_enabled={do_collect}")
                         self._apply_candidates(candidates, root_location, do_collect)
 
-                    ui.Button("Cancel", width=100, clicked_fn=_cancel)
-                    ui.Button("Apply", width=100, clicked_fn=_apply)
+                    ui.Button("Cancel", width=120, height=30, clicked_fn=self._close_preview)
+                    ui.Spacer(width=8)
+                    ui.Button("Apply", width=120, height=30, clicked_fn=_apply)
+                    ui.Spacer(width=12)
+
+    @staticmethod
+    def _detail_line(key: str, model: ui.SimpleStringModel):
+        with ui.HStack(height=18, spacing=8):
+            ui.Label(key, name="detail_key", width=52)
+            ui.StringField(model=model, read_only=True, name="detail_val")
+
+    def _close_preview(self):
+        if self._preview_window:
+            try:
+                self._preview_window.visible = False
+            except Exception:
+                pass
+            self._preview_window = None
 
     def _apply_candidates(
+        self,
+        candidates: list[_PathCandidate],
+        root_location: str,
+        collect_enabled: bool,
+    ):
+        self._close_preview()
+        asyncio.ensure_future(
+            self._apply_candidates_async(candidates, root_location, collect_enabled)
+        )
+
+    async def _apply_candidates_async(
         self,
         candidates: list[_PathCandidate],
         root_location: str,
@@ -213,7 +435,8 @@ class MakePathsRelativeHandler:
                         f"collect_try kind={candidate.kind} prim={candidate.owner_path} "
                         f"source={collect_source}"
                     )
-                    collected_target = collector.collect(collect_source)
+                    is_usd_ref = candidate.kind.startswith(("reference", "payload", "sublayer"))
+                    collected_target = await collector.collect_async(collect_source, is_usd=is_usd_ref)
                     if collected_target:
                         self._debug(f"collect_ok source={collect_source} target={collected_target}")
                         new_path = self._to_relative_asset_path(collected_target, candidate.layer)
@@ -413,92 +636,162 @@ class MakePathsRelativeHandler:
         if "asset" not in type_name:
             return
 
-        value = getattr(attr_spec, "default", None)
+        # 1) Default value (single asset or asset[])
+        default_value = getattr(attr_spec, "default", None)
+        self._collect_asset_value_candidates(
+            layer,
+            layer_name,
+            root_location,
+            owner_path,
+            attr_spec,
+            default_value,
+            time_code=None,
+            out=out,
+        )
+
+        # 2) Time-sampled values. Kit stores material inputs (incl. textures)
+        #    as time samples, so these must be scanned as well.
+        try:
+            attr_path = attr_spec.path
+            time_samples = list(layer.ListTimeSamplesForPath(attr_path) or [])
+        except Exception:
+            time_samples = []
+
+        for time_code in time_samples:
+            try:
+                sample_value = layer.QueryTimeSample(attr_path, time_code)
+            except Exception:
+                continue
+            self._collect_asset_value_candidates(
+                layer,
+                layer_name,
+                root_location,
+                owner_path,
+                attr_spec,
+                sample_value,
+                time_code=time_code,
+                out=out,
+            )
+
+    def _collect_asset_value_candidates(
+        self,
+        layer,
+        layer_name: str,
+        root_location: str,
+        owner_path: str,
+        attr_spec,
+        value,
+        time_code,
+        out: list[_PathCandidate],
+    ):
         if value is None:
             return
+
+        attr_path = attr_spec.path
+
+        def _set_default(new_path, _attr=attr_spec):
+            _attr.default = Sdf.AssetPath(new_path)
+
+        def _set_default_array(new_path, _attr=attr_spec, _idx=0):
+            current = list(getattr(_attr, "default", []) or [])
+            if _idx >= len(current):
+                return
+            current[_idx] = Sdf.AssetPath(new_path)
+            _attr.default = current
+
+        def _set_sample_single(new_path, _layer=layer, _path=attr_path, _tc=time_code):
+            _layer.SetTimeSample(_path, _tc, Sdf.AssetPath(new_path))
+
+        def _make_set_sample_array(idx):
+            def _set(new_path, _layer=layer, _path=attr_path, _tc=time_code, _idx=idx):
+                current = list(_layer.QueryTimeSample(_path, _tc) or [])
+                if _idx >= len(current):
+                    return
+                current[_idx] = Sdf.AssetPath(new_path)
+                _layer.SetTimeSample(_path, _tc, current)
+
+            return _set
+
+        source_label = "default" if time_code is None else f"time@{time_code:g}"
 
         if isinstance(value, Sdf.AssetPath):
             old_path = normalize_path(value.path)
             if not old_path:
                 return
-
-            proposed = self._to_relative_asset_path(old_path, layer)
-            can_relative = proposed != old_path
-            resolved_source = self._resolve_asset_path_for_layer(old_path, layer)
-            collect_recommended, collect_reason = self._collect_recommendation(
-                resolved_source,
+            apply_fn = _set_default if time_code is None else _set_sample_single
+            self._maybe_add_attribute_candidate(
+                layer,
+                layer_name,
                 root_location,
-            )
-            if not can_relative and not collect_recommended:
-                return
-
-            def _apply(new_path, _attr=attr_spec):
-                _attr.default = Sdf.AssetPath(new_path)
-
-            self._append_candidate(
+                owner_path,
+                f"attribute:{source_label}",
+                old_path,
+                apply_fn,
                 out,
-                _PathCandidate(
-                    layer=layer,
-                    layer_name=layer_name,
-                    kind="attribute:default",
-                    owner_path=owner_path,
-                    old_path=old_path,
-                    proposed_path=proposed,
-                    can_make_relative=can_relative,
-                    collect_recommended=collect_recommended,
-                    collect_reason=collect_reason,
-                    collect_source_path=resolved_source,
-                    apply_fn=_apply,
-                ),
             )
             return
 
         try:
-            values = list(value)
+            entries = list(value)
         except Exception:
             return
 
-        if not values:
-            return
-
-        for index, entry in enumerate(values):
+        for index, entry in enumerate(entries):
             entry_path = normalize_path(getattr(entry, "path", "") or "")
             if not entry_path:
                 continue
-
-            proposed = self._to_relative_asset_path(entry_path, layer)
-            can_relative = proposed != entry_path
-            resolved_source = self._resolve_asset_path_for_layer(entry_path, layer)
-            collect_recommended, collect_reason = self._collect_recommendation(
-                resolved_source,
+            if time_code is None:
+                apply_fn = (lambda np, _i=index: _set_default_array(np, _idx=_i))
+            else:
+                apply_fn = _make_set_sample_array(index)
+            self._maybe_add_attribute_candidate(
+                layer,
+                layer_name,
                 root_location,
-            )
-            if not can_relative and not collect_recommended:
-                continue
-
-            def _apply(new_path, _attr=attr_spec, _idx=index):
-                current = list(getattr(_attr, "default", []) or [])
-                if _idx >= len(current):
-                    return
-                current[_idx] = Sdf.AssetPath(new_path)
-                _attr.default = current
-
-            self._append_candidate(
+                f"{owner_path}[{index}]",
+                f"attribute:{source_label}Array",
+                entry_path,
+                apply_fn,
                 out,
-                _PathCandidate(
-                    layer=layer,
-                    layer_name=layer_name,
-                    kind="attribute:defaultArray",
-                    owner_path=f"{owner_path}[{index}]",
-                    old_path=entry_path,
-                    proposed_path=proposed,
-                    can_make_relative=can_relative,
-                    collect_recommended=collect_recommended,
-                    collect_reason=collect_reason,
-                    collect_source_path=resolved_source,
-                    apply_fn=_apply,
-                ),
             )
+
+    def _maybe_add_attribute_candidate(
+        self,
+        layer,
+        layer_name: str,
+        root_location: str,
+        owner_path: str,
+        kind: str,
+        old_path: str,
+        apply_fn,
+        out: list[_PathCandidate],
+    ):
+        proposed = self._to_relative_asset_path(old_path, layer)
+        can_relative = proposed != old_path
+        resolved_source = self._resolve_asset_path_for_layer(old_path, layer)
+        collect_recommended, collect_reason = self._collect_recommendation(
+            resolved_source,
+            root_location,
+        )
+        if not can_relative and not collect_recommended:
+            return
+
+        self._append_candidate(
+            out,
+            _PathCandidate(
+                layer=layer,
+                layer_name=layer_name,
+                kind=kind,
+                owner_path=owner_path,
+                old_path=old_path,
+                proposed_path=proposed,
+                can_make_relative=can_relative,
+                collect_recommended=collect_recommended,
+                collect_reason=collect_reason,
+                collect_source_path=resolved_source,
+                apply_fn=apply_fn,
+            ),
+        )
 
     def _collect_list_candidates(
         self,
@@ -771,39 +1064,6 @@ class MakePathsRelativeHandler:
             return value
         return f"{value[: max_len - 3]}..."
 
-    def _render_candidate_row(self, index: int, candidate: _PathCandidate):
-        mode = "collect" if candidate.collect_recommended else "relative"
-        note = f" ({candidate.collect_reason})" if candidate.collect_reason else ""
-        target_preview = candidate.proposed_path if candidate.can_make_relative else "(needs collect)"
-
-        with ui.VStack(spacing=2):
-            with ui.HStack(height=22, spacing=8):
-                ui.Label(f"{index}", width=34)
-                ui.Label(mode, width=80)
-                ui.Label(candidate.kind, width=190)
-                ui.Label(self._clip(candidate.owner_path, 52), width=360)
-                ui.Label(self._clip(os.path.basename(candidate.layer_name) or candidate.layer_name, 36), width=260)
-                ui.Label(self._clip(note.replace("(", "").replace(")", ""), 18), width=160)
-            with ui.HStack(height=20, spacing=8):
-                ui.Label("", width=34)
-                ui.Label("from", width=80)
-                ui.Label(self._clip(candidate.old_path, 170), word_wrap=True)
-            with ui.HStack(height=20, spacing=8):
-                ui.Label("", width=34)
-                ui.Label("to", width=80)
-                ui.Label(self._clip(target_preview, 170), word_wrap=True)
-        ui.Spacer(height=6)
-
-    @staticmethod
-    def _render_table_header():
-        with ui.HStack(height=22, spacing=8):
-            ui.Label("#", width=34)
-            ui.Label("Mode", width=80)
-            ui.Label("Kind", width=190)
-            ui.Label("Prim / Attr", width=360)
-            ui.Label("Layer", width=260)
-            ui.Label("Collect reason", width=160)
-
     @staticmethod
     def _debug(message: str):
         if _DEBUG:
@@ -815,6 +1075,7 @@ class MakePathsRelativeHandler:
                     pass
 
     def _show_message(self, title: str, text: str):
+        self._close_preview()
         if self._message_window:
             try:
                 self._message_window.visible = False
@@ -847,6 +1108,75 @@ class _Collector:
         self._cache = {}
         self._failed = set()
         self.failures = []
+
+    async def collect_async(self, source_path: str, is_usd: bool) -> str | None:
+        """Collect a source asset.
+
+        For USD references/payloads/sublayers this uses the official
+        ``omni.kit.usd.collect`` Collector so that all sub-dependencies
+        (textures, MDL, nested USD) are collected and re-mapped.
+
+        For single non-USD assets (mdl/png/...) a plain download is used.
+        """
+        key = normalize_path(source_path)
+        cached = self._cache.get(key)
+        if cached:
+            MakePathsRelativeHandler._debug(f"collector_cache_hit source={key} target={cached}")
+            return cached
+        if key in self._failed:
+            MakePathsRelativeHandler._debug(f"collector_failed_cache_hit source={key}")
+            return None
+
+        if is_usd:
+            result = await self._collect_usd_with_dependencies(key)
+            if result:
+                self._cache[key] = result
+                return result
+            self._failed.add(key)
+            return None
+
+        return self.collect(key)
+
+    async def _collect_usd_with_dependencies(self, source_usd: str) -> str | None:
+        try:
+            from omni.kit.usd.collect import Collector
+        except Exception as exc:
+            self.failures.append(f"collect tool unavailable: {exc}")
+            MakePathsRelativeHandler._debug(f"collector_tool_unavailable reason={exc}")
+            # Fallback: at least copy the single USD file (textures may break).
+            return self.collect(source_usd)
+
+        # Give each collected asset its own subfolder to preserve its internal
+        # relative folder structure (materials/, etc.) without collisions.
+        leaf = posixpath.basename(urlparse(source_usd).path) or "asset.usd"
+        stem = os.path.splitext(leaf)[0]
+        digest = hashlib.sha1(source_usd.encode("utf-8")).hexdigest()[:10]
+        collect_dir = self._join_path(self._target_dir, f"{digest}_{stem}")
+
+        source_for_tool = omni.client.make_file_url_if_possible(source_usd)
+        MakePathsRelativeHandler._debug(
+            f"collector_tool_start source={source_for_tool} dir={collect_dir}"
+        )
+        try:
+            collector = Collector(source_for_tool, collect_dir)
+            success, collected_root = await collector.collect()
+        except Exception as exc:
+            self.failures.append(f"collect tool failed for {source_usd}: {exc}")
+            MakePathsRelativeHandler._debug(f"collector_tool_exception reason={exc}")
+            return None
+
+        if not success or not collected_root:
+            self.failures.append(f"collect tool did not produce root for {source_usd}")
+            MakePathsRelativeHandler._debug(
+                f"collector_tool_no_root success={success} root={collected_root}"
+            )
+            return None
+
+        collected_root = normalize_path(
+            to_local_filesystem_path(collected_root) or collected_root
+        )
+        MakePathsRelativeHandler._debug(f"collector_tool_done root={collected_root}")
+        return collected_root
 
     def collect(self, source_path: str) -> str | None:
         key = normalize_path(source_path)
@@ -896,6 +1226,10 @@ class _Collector:
         base_dir = posixpath.dirname(normalize_path(parsed.path or ""))
         collected_dir = posixpath.join(base_dir or "/", "_collected_external_assets")
         return f"{parsed.scheme}://{parsed.netloc}{normalize_path(collected_dir)}"
+
+    @staticmethod
+    def preview_target_dir(root_location: str) -> str:
+        return _Collector._build_target_dir(normalize_path(root_location))
 
     @staticmethod
     def _target_name_for_source(source_path: str) -> str:
