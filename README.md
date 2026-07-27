@@ -23,6 +23,13 @@ actions apply relative to the current selection.
 
 Triggers `Layout > Quick Load` from the menu bar.
 
+### Maximize Window Under Cursor (`Shift+Escape`)
+
+Temporarily maximizes the window currently under the mouse cursor. The window is
+undocked and resized to fill the whole application window; the previous
+workspace layout is remembered. Press `Shift+Escape` again to restore the
+previous layout (position, size, and docking of every window).
+
 ### Stage Navigation (Stage window focused)
 
 | Key                  | Action                                    |
