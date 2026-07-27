@@ -20,6 +20,7 @@ from omni.kit.window.quicksearch.quicksearch_window import QuickSearchWindow
 
 from .create_project import CreateProjectHandler
 from .hotkeys import HotkeyManager
+from .make_paths_relative import MakePathsRelativeHandler
 from .menu_snapshot import MenuSnapshotCapture
 from .model import UnifiedQuickSearchModel
 from .paths import normalize_path
@@ -39,6 +40,7 @@ class Extension(omni.ext.IExt):
         self._menu_snapshot = None
         self._preview_capture = None
         self._create_project = None
+        self._make_paths_relative = None
         self._stage_nav = None
         self._hotkeys = None
         self._window_toggle = None
@@ -59,6 +61,7 @@ class Extension(omni.ext.IExt):
         self._menu_snapshot = MenuSnapshotCapture()
         self._preview_capture = PreviewCaptureHandler()
         self._create_project = CreateProjectHandler(gridroom_asset_source)
+        self._make_paths_relative = MakePathsRelativeHandler()
         self._stage_nav = StageNavigationHandler()
         self._window_toggle = WindowMaximizeToggle()
         self._hotkeys = HotkeyManager(
@@ -83,6 +86,7 @@ class Extension(omni.ext.IExt):
         self._snapshot_task = asyncio.ensure_future(self._menu_snapshot.capture_with_retry())
         self._preview_capture.start()
         self._create_project.register_menu_entry()
+        self._make_paths_relative.register_menu_entry()
         self._hotkeys.register()
         carb.log_info("[QuickSearchUX] Registered unified quick-search provider")
 
@@ -97,6 +101,8 @@ class Extension(omni.ext.IExt):
             self._hotkeys.deregister()
         if self._create_project:
             self._create_project.deregister_menu_entry()
+        if self._make_paths_relative:
+            self._make_paths_relative.deregister_menu_entry()
         if self._stage_nav:
             self._stage_nav.reset()
         if self._window_toggle:

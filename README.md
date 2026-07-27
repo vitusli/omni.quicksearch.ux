@@ -45,6 +45,23 @@ Enter a project name to scaffold the standard folder structure, a `README.md`,
 the gridroom environment asset, and a base USD stage saved as
 `omniverse/main.usda`. Requires a new/unsaved stage to be active.
 
+### Make All Paths Relative (`File > Make all paths relative`)
+
+Scans stage-scoped used layers and previews all asset-path rewrites before
+applying. The preview is grouped into collect-candidates and direct-relative
+candidates.
+
+- Rewrites paths in:
+  - sublayers
+  - references
+  - payloads
+  - asset-typed attribute defaults (for example `info:mdl:sourceAsset`)
+- Supports optional collect for online/outside-root assets:
+  - copies them into `omniverse/_collected_external_assets/`
+  - rewrites the source path to a relative path from the owning layer
+- Skips anonymous layers and layers outside the current root stage scope.
+- Prints detailed debug and change logs to the terminal/log output.
+
 ### Automatic Viewport Preview
 
 Saving a stage named `main.usd` / `main.usda` writes a `preview.png` (active
