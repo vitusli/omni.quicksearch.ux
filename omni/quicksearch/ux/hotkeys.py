@@ -188,7 +188,7 @@ class HotkeyManager:
             if self._hotkey_registry is None:
                 self._hotkey_registry = get_hotkey_registry()
             key = KeyCombination(
-                carb.input.KeyboardInput.SPACE, carb.input.KEYBOARD_MODIFIER_FLAG_SHIFT
+                carb.input.KeyboardInput.ESCAPE, carb.input.KEYBOARD_MODIFIER_FLAG_SHIFT
             )
             handle = self._hotkey_registry.register_hotkey(
                 self._ext_id, key, self._ext_id, MAXIMIZE_WINDOW_ACTION_ID
@@ -356,12 +356,12 @@ class HotkeyManager:
                 self.trigger_layout_quick_load()
 
             use_maximize_fallback = self._hotkey_fallback_mode or not self._maximize_hotkey_registered
-            is_shift_space = (
-                event.input == carb.input.KeyboardInput.SPACE
+            is_shift_escape = (
+                event.input == carb.input.KeyboardInput.ESCAPE
                 and bool(event.modifiers & carb.input.KEYBOARD_MODIFIER_FLAG_SHIFT)
                 and not has_ctrl
             )
-            if use_maximize_fallback and is_shift_space and self._window_toggle is not None:
+            if use_maximize_fallback and is_shift_escape and self._window_toggle is not None:
                 self._window_toggle.toggle()
 
             is_ctrl_shift_c = (
