@@ -1,8 +1,9 @@
 # Quick Search UX
 
 Unified quick-search extension for Isaac Sim / Omniverse Kit. It combines menu
-and stage actions into a single `Ctrl+F` search window and adds a few
-productivity features.
+and stage actions into a single `Ctrl+F` search window, adds productivity
+hotkeys, and places Pivot / Array / Scene Optimizer buttons directly in the
+main toolbar.
 
 ## Installation
 
@@ -10,34 +11,32 @@ productivity features.
    `Window > Extensions > ⚙ > Extension Search Paths`.
 2. Find **Quick Search UX** in the list and enable it.
 
+## Hotkeys
+
+| Hotkey              | Context          | Action                                          |
+|---------------------|------------------|-------------------------------------------------|
+| `Ctrl+F`            | Global           | Open unified quick-search window                |
+| `Ctrl+8`            | Global           | Trigger `Layout > Quick Load`                   |
+| `Shift+Escape`      | Global           | Toggle maximize / restore window under cursor   |
+| `Right`             | Stage (focused)  | Expand selected prim                            |
+| `Left`              | Stage (focused)  | Collapse selected prim                          |
+| `Down`              | Stage (focused)  | Select next visible prim                        |
+| `Backspace`         | Stage (focused)  | Toggle active state of selected prims           |
+| `Ctrl+Shift+C`      | Stage (focused)  | Copy selected prim paths to clipboard           |
+
 ## Features
 
 ### Unified Quick Search (`Ctrl+F`)
 
 Opens a search window covering menu bar entries, Create (mesh/shape/light/
 camera/scope/xform), Physics presets, and Stage context-menu actions in one
-list. Type to filter, use the arrow keys to navigate, `Enter` to run. Create/Physics
+list. Type to filter, arrow keys to navigate, `Enter` to run. Create/Physics
 actions apply relative to the current selection.
 
-### Layout Quick Load (`Ctrl+8`)
+### Main Toolbar Buttons
 
-Triggers `Layout > Quick Load` from the menu bar.
-
-### Maximize Window Under Cursor (`Shift+Escape`)
-
-Temporarily maximizes the window currently under the mouse cursor. The window is
-undocked and resized to fill the whole application window; the previous
-workspace layout is remembered. Press `Shift+Escape` again to restore the
-previous layout (position, size, and docking of every window).
-
-### Stage Navigation (Stage window focused)
-
-| Key                  | Action                                    |
-|----------------------|-------------------------------------------|
-| `Right` / `Left`     | Expand / collapse the selected prim       |
-| `Down`               | Select the next visible prim              |
-| `Backspace`          | Toggle active state of selected prims     |
-| `Ctrl+Shift+C`       | Copy selected prim paths to the clipboard |
+Adds **Pivot Tool**, **Array Tool**, and **Scene Optimizer** buttons to the
+main toolbar. Each button is hidden until the corresponding tool is available.
 
 ### Create Project (`File > Create Project`)
 
@@ -47,24 +46,10 @@ the gridroom environment asset, and a base USD stage saved as
 
 ### Make All Paths Relative (`File > Make all paths relative`)
 
-Scans stage-scoped used layers and shows a grouped preview table (per layer)
-with a details panel before applying any change.
-
-- Rewrites paths in:
-  - sublayers
-  - references
-  - payloads
-  - asset-typed attributes, including default values and time samples
-    (for example `info:mdl:sourceAsset` and material texture inputs)
-- Supports optional collect for online / outside-root assets:
-  - USD references/payloads/sublayers are collected with the official
-    `omni.kit.usd.collect` tool, so all sub-dependencies (textures, MDL,
-    nested USD) are collected and re-mapped correctly
-  - single non-USD assets are downloaded directly
-  - collected assets are placed under `omniverse/_collected_external_assets/`
-    and the owning path is rewritten to a relative path
-- Skips anonymous layers and layers outside the current root stage scope.
-- Prints detailed debug and change logs to the terminal/log output.
+Scans all stage layers and shows a preview before rewriting sublayer, reference,
+payload, and asset attribute paths to relative ones. External assets (online or
+outside the project root) are collected automatically and placed under
+`omniverse/_collected_external_assets/`.
 
 ### Automatic Viewport Preview
 

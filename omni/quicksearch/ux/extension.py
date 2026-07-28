@@ -7,6 +7,7 @@ Thin coordinator that wires together the feature handlers:
 * :class:`~.create_project.CreateProjectHandler` - File > Create Project
 * :class:`~.stage_navigation.StageNavigationHandler` - Stage prim navigation
 * :class:`~.hotkeys.HotkeyManager` - hotkeys, actions and keyboard fallback
+* :class:`~.toolbar_buttons.ToolbarButtonsManager` - Pivot / Array / Scene Optimizer toolbar buttons
 """
 
 import asyncio
@@ -26,6 +27,7 @@ from .model import UnifiedQuickSearchModel
 from .paths import normalize_path
 from .preview_capture import PreviewCaptureHandler
 from .stage_navigation import StageNavigationHandler
+from .toolbar_buttons import ToolbarButtonsManager
 from .window_toggle import WindowMaximizeToggle
 
 
@@ -44,6 +46,7 @@ class Extension(omni.ext.IExt):
         self._stage_nav = None
         self._hotkeys = None
         self._window_toggle = None
+        self._toolbar_buttons = None
         self._snapshot_task = None
 
     # -- lifecycle ------------------------------------------------------------
@@ -73,6 +76,9 @@ class Extension(omni.ext.IExt):
             window_toggle=self._window_toggle,
         )
 
+        self._toolbar_buttons = ToolbarButtonsManager()
+        self._toolbar_buttons.startup()
+
         self._subscription = QuickSearchRegistry().register_quick_search_model(
             "Quick Search UX",
             UnifiedQuickSearchModel,
@@ -97,6 +103,9 @@ class Extension(omni.ext.IExt):
 
         if self._preview_capture:
             self._preview_capture.stop()
+        if self._toolbar_buttons:
+            self._toolbar_buttons.shutdown()
+            self._toolbar_buttons = None
         if self._hotkeys:
             self._hotkeys.deregister()
         if self._create_project:

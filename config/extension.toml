@@ -29,6 +29,13 @@ readme = "README.md"
 "omni.client" = {}
 "omni.physx.commands" = { optional = true }
 "omni.kit.primitive.mesh" = { optional = true }
+"omni.kit.window.toolbar" = { optional = true }
+"omni.kit.widget.toolbar" = { optional = true }
+"omni.kit.manipulator.prim.core" = { optional = true }
+
+[settings]
+exts."omni.quicksearch.ux".arrayAction.extension = ""
+exts."omni.quicksearch.ux".arrayAction.id = ""
 
 [[python.module]]
 name = "omni.quicksearch.ux"
