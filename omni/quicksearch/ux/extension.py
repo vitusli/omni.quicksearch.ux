@@ -23,7 +23,7 @@ from .create_project import CreateProjectHandler
 from .hotkeys import HotkeyManager
 from .make_paths_relative import MakePathsRelativeHandler
 from .menu_snapshot import MenuSnapshotCapture
-from .model import UnifiedQuickSearchModel
+from .model import UnifiedQuickSearchModel, set_rebuild_search_index_action
 from .paths import normalize_path
 from .preview_capture import PreviewCaptureHandler
 from .stage_navigation import StageNavigationHandler
@@ -96,6 +96,7 @@ class Extension(omni.ext.IExt):
         self._create_project.register_menu_entry()
         self._make_paths_relative.register_menu_entry()
         self._hotkeys.register()
+        set_rebuild_search_index_action(self.rebuild_search_index)
         carb.log_info("[QuickSearchUX] Registered unified quick-search provider")
 
     def on_shutdown(self):
@@ -122,12 +123,63 @@ class Extension(omni.ext.IExt):
             self._stage_nav.reset()
         if self._window_toggle:
             self._window_toggle.reset()
+        set_rebuild_search_index_action(None)
 
         self._subscription = None
         if self._window:
             self._window.destroy()
             self._window = None
         carb.log_info("[QuickSearchUX] Unregistered unified quick-search provider")
+
+    def rebuild_search_index(self):
+        asyncio.ensure_future(self._rebuild_search_index_next_frame())
+
+    async def _rebuild_search_index_next_frame(self):
+        await omni.kit.app.get_app().next_update_async()
+
+        self._resync_extension_registries()
+
+        if self._menu_snapshot:
+            captured = self._menu_snapshot.capture_once()
+            if not captured:
+                asyncio.ensure_future(self._menu_snapshot.capture_with_retry())
+
+        if self._window:
+            try:
+                self._window.destroy()
+            except Exception as exc:
+                carb.log_warn(f"[QuickSearchUX] Could not destroy quick-search window during rebuild: {exc}")
+            finally:
+                self._window = None
+
+        self._prewarm_task = asyncio.ensure_future(self._prewarm_window_next_frame())
+        carb.log_info("[QuickSearchUX] Rebuilt search index and refreshed quick-search window")
+
+    @staticmethod
+    def _resync_extension_registries():
+        ext_manager = omni.kit.app.get_app().get_extension_manager()
+        candidate_methods = (
+            "refresh_registry",
+            "refresh_registries",
+            "sync_registry",
+            "sync_registries",
+            "resync_registry",
+            "rescan_registry",
+            "refresh_extension_registries",
+        )
+
+        for method_name in candidate_methods:
+            method = getattr(ext_manager, method_name, None)
+            if not callable(method):
+                continue
+            try:
+                method()
+                carb.log_info(f"[QuickSearchUX] Synced extension registries using '{method_name}'")
+                return
+            except Exception as exc:
+                carb.log_warn(f"[QuickSearchUX] Registry sync method '{method_name}' failed: {exc}")
+
+        carb.log_warn("[QuickSearchUX] No extension-registry sync API found on extension manager")
 
     # -- quick-search window --------------------------------------------------
 

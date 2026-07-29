@@ -14,6 +14,7 @@ from pxr import Gf, Sdf, UsdGeom, UsdPhysics
 ActionFn = Callable[[], None]
 _MENU_SNAPSHOT = {}
 _TRIGGER_MAP = {}
+_REBUILD_SEARCH_INDEX_ACTION: Optional[ActionFn] = None
 _NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
 
 
@@ -29,6 +30,11 @@ def set_menu_snapshot(menu_snapshot: dict, trigger_map: Optional[dict] = None):
     global _MENU_SNAPSHOT, _TRIGGER_MAP
     _MENU_SNAPSHOT = menu_snapshot or {}
     _TRIGGER_MAP = trigger_map or {}
+
+
+def set_rebuild_search_index_action(action: Optional[ActionFn]):
+    global _REBUILD_SEARCH_INDEX_ACTION
+    _REBUILD_SEARCH_INDEX_ACTION = action
 
 
 class QuickSearchItem(ui.AbstractItem):
@@ -203,11 +209,32 @@ class UnifiedQuickSearchModel(ui.AbstractItemModel):
 
     def _build_items(self) -> list[QuickSearchItem]:
         items = []
+        utility_root = self._build_utility_root()
+        if utility_root:
+            items.append(utility_root)
         items.extend(self._build_stage_roots())
         menu_root = self._build_menu_root()
         if menu_root:
             items.append(menu_root)
         return items
+
+    def _build_utility_root(self) -> Optional[QuickSearchItem]:
+        if _REBUILD_SEARCH_INDEX_ACTION is None:
+            return None
+
+        return QuickSearchItem(
+            "Quick Search UX",
+            "Quick Search UX utility actions",
+            children=[
+                QuickSearchItem(
+                    "Rebuild Search Index",
+                    "Resync extension registries and refresh menu/action snapshots",
+                    _REBUILD_SEARCH_INDEX_ACTION,
+                    complete_text="Rebuild Search Index",
+                )
+            ],
+            complete_text="Quick Search UX",
+        )
 
     def _build_menu_root(self) -> Optional[QuickSearchItem]:
         children = []
