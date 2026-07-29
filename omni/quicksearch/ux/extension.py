@@ -127,11 +127,11 @@ class Extension(omni.ext.IExt):
 
     def show_window(self):
         self._exclusive = True
-        self._menu_snapshot.capture_once()
         if not self._window:
             self._window = QuickSearchWindow()
         else:
             self._window.show()
+        asyncio.ensure_future(self._refresh_menu_snapshot_next_frame())
         asyncio.ensure_future(self._clear_exclusive_next_frame())
 
     def _is_exclusive(self):
@@ -143,3 +143,7 @@ class Extension(omni.ext.IExt):
     async def _clear_exclusive_next_frame(self):
         await omni.kit.app.get_app().next_update_async()
         self._exclusive = False
+
+    async def _refresh_menu_snapshot_next_frame(self):
+        await omni.kit.app.get_app().next_update_async()
+        self._menu_snapshot.capture_once()
