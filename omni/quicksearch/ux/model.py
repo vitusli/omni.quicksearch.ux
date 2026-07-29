@@ -576,6 +576,11 @@ class UnifiedQuickSearchModel(ui.AbstractItemModel):
         for path in omni.usd.get_context().get_selection().get_selected_prim_paths():
             prim = stage.GetPrimAtPath(path)
             if prim and prim.IsValid() and prim.GetPath() != Sdf.Path.absoluteRootPath:
+                if prim.IsA(UsdGeom.Gprim):
+                    parent = prim.GetParent()
+                    if parent and parent.IsValid() and parent.GetPath() != Sdf.Path.absoluteRootPath:
+                        return parent.GetPath().pathString
+                    return "/"
                 return prim.GetPath().pathString
 
         default_prim = stage.GetDefaultPrim()
