@@ -72,6 +72,24 @@ def _execute_menu_action(preferred_names: Iterable[str], root_menu: str = "Tools
     return False
 
 
+def _resolve_menu_action_id(preferred_names: Iterable[str], root_menu: str = "Tools"):
+    merged_menus = omni.kit.menu.utils.get_merged_menus() or {}
+    if root_menu not in merged_menus:
+        return None
+
+    lower_names = {n.lower() for n in preferred_names}
+    for item in _iter_menu_items(root_menu, merged_menus):
+        name = (getattr(item, "name", "") or "").strip().lower()
+        if name not in lower_names:
+            continue
+
+        onclick_action = getattr(item, "onclick_action", None)
+        if onclick_action and len(onclick_action) >= 2:
+            return onclick_action[0], onclick_action[1]
+
+    return None
+
+
 def _has_menu_action(preferred_names: Iterable[str], root_menu: str = "Tools") -> bool:
     merged_menus = omni.kit.menu.utils.get_merged_menus() or {}
     if root_menu not in merged_menus:
@@ -190,6 +208,8 @@ class ArrayButtonGroup(WidgetGroup):
         self._icon_folder = _icon_folder()
         self._button = None
         self._settings = settings
+        self._detected_action = None
+        self._warned_no_action = False
 
     def get_style(self):
         return _build_stateless_toolbutton_style("array_tool", f"{self._icon_folder}/array_tool.svg")
@@ -219,13 +239,26 @@ class ArrayButtonGroup(WidgetGroup):
             self._button.checked = False
 
         try:
+            if button == 1:
+                if self._show_array_context_menu():
+                    return
+                if self._execute_array_action():
+                    return
+                if _execute_menu_action(self._MENU_NAMES, self._MENU_ROOT):
+                    return
+                self._warn_array_action_unavailable()
+                return
+
+            if self._execute_array_action():
+                return
+
             if _execute_menu_action(self._MENU_NAMES, self._MENU_ROOT):
                 return
 
             if self._show_array_context_menu():
                 return
 
-            self._execute_array_action()
+            self._warn_array_action_unavailable()
         finally:
             if self._button is not None:
                 self._button.checked = False
@@ -263,25 +296,43 @@ class ArrayButtonGroup(WidgetGroup):
 
         return False
 
-    def _execute_array_action(self):
+    def _execute_array_action(self) -> bool:
         ext_id = self._settings.get_as_string("/exts/omni.quicksearch.ux/arrayAction/extension")
         action_id = self._settings.get_as_string("/exts/omni.quicksearch.ux/arrayAction/id")
         action = None
+        registry = omni.kit.actions.core.get_action_registry()
 
         if ext_id and action_id:
-            action = omni.kit.actions.core.get_action_registry().get_action(ext_id, action_id)
+            action = registry.get_action(ext_id, action_id) if registry else None
 
         if action is None:
-            action = self._find_array_action()
+            menu_action_id = _resolve_menu_action_id(self._MENU_NAMES, self._MENU_ROOT)
+            if menu_action_id and registry:
+                action = registry.get_action(menu_action_id[0], menu_action_id[1])
 
         if action is None:
-            carb.log_warn(
-                "[omni.quicksearch.ux] Array action not found. "
-                "Configure /exts/omni.quicksearch.ux/arrayAction/extension and /id settings."
-            )
-            return
+            if self._detected_action is not None:
+                action = self._detected_action
+            else:
+                action = self._find_array_action()
+                if action is not None:
+                    self._detected_action = action
+
+        if action is None:
+            return False
 
         action.execute()
+        self._warned_no_action = False
+        return True
+
+    def _warn_array_action_unavailable(self):
+        if self._warned_no_action:
+            return
+        self._warned_no_action = True
+        carb.log_warn(
+            "[omni.quicksearch.ux] Array action not found. "
+            "Configure /exts/omni.quicksearch.ux/arrayAction/extension and /id settings."
+        )
 
     @staticmethod
     def _find_array_action():
@@ -292,7 +343,7 @@ class ArrayButtonGroup(WidgetGroup):
         candidates = []
         for action in registry.get_all_actions():
             text = f"{action.extension_id}:{action.id}:{action.display_name}".lower()
-            if "array" in text and ("tool" in text or "create" in text or "open" in text):
+            if "array" in text:
                 candidates.append(action)
 
         if not candidates:
