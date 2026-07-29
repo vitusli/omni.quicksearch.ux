@@ -14,6 +14,15 @@ from pxr import Gf, Sdf, UsdGeom, UsdPhysics
 ActionFn = Callable[[], None]
 _MENU_SNAPSHOT = {}
 _TRIGGER_MAP = {}
+_NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _normalize_for_search(value: str) -> str:
+    return " ".join(_NON_ALNUM_RE.sub(" ", str(value or "").lower()).split())
+
+
+def _compact_for_search(value: str) -> str:
+    return value.replace(" ", "")
 
 
 def set_menu_snapshot(menu_snapshot: dict, trigger_map: Optional[dict] = None):
@@ -42,22 +51,132 @@ class QuickSearchItem(ui.AbstractItem):
         self.icon_model = ui.SimpleStringModel("")
         self.tooltip_model = ui.SimpleStringModel(self.description)
 
+        self.search_name = _normalize_for_search(self.name)
+        self.search_description = _normalize_for_search(self.description)
+        self.search_complete = _normalize_for_search(self.complete_text)
+        self.search_full = " ".join(part for part in (self.search_name, self.search_description, self.search_complete) if part)
+        self.search_name_compact = _compact_for_search(self.search_name)
+        self.search_full_compact = _compact_for_search(self.search_full)
+
 
 class UnifiedQuickSearchModel(ui.AbstractItemModel):
     def __init__(self):
         super().__init__()
         self._action_map, self._actions_by_leaf = self._build_menu_action_maps()
         self._items = self._build_items()
+        self._leaf_items = self._collect_leaf_items(self._items)
+        self._filtered_leaf_items: Optional[list[QuickSearchItem]] = None
+        self._filter_text = ""
 
     def destroy(self):
         self._items = []
+        self._leaf_items = []
+        self._filtered_leaf_items = None
+        self._filter_text = ""
         self._action_map = {}
         self._actions_by_leaf = {}
 
     def get_item_children(self, item):
+        if self._filtered_leaf_items is not None:
+            if item is None:
+                return self._filtered_leaf_items
+            return []
         if item is None:
             return self._items
         return item.children
+
+    def filter_by_text(self, filter_text: str):
+        if filter_text == self._filter_text:
+            return
+
+        self._filter_text = filter_text
+        query = _normalize_for_search(filter_text)
+        if not query:
+            self._filtered_leaf_items = None
+            self._item_changed(None)
+            return
+
+        query_compact = _compact_for_search(query)
+        query_terms = tuple(query.split())
+
+        scored_items = []
+        for item in self._leaf_items:
+            score = self._score_item(item, query, query_compact, query_terms)
+            if score > 0:
+                scored_items.append((score, item))
+
+        scored_items.sort(key=lambda scored: (-scored[0], len(scored[1].name), scored[1].name.lower()))
+        self._filtered_leaf_items = [item for _, item in scored_items]
+        self._item_changed(None)
+
+    def _collect_leaf_items(self, items: Iterable[QuickSearchItem]) -> list[QuickSearchItem]:
+        leaves = []
+        for item in items:
+            if item.children:
+                leaves.extend(self._collect_leaf_items(item.children))
+            else:
+                leaves.append(item)
+        return leaves
+
+    def _score_item(
+        self,
+        item: QuickSearchItem,
+        query: str,
+        query_compact: str,
+        query_terms: tuple[str, ...],
+    ) -> int:
+        name = item.search_name
+        full = item.search_full
+        complete = item.search_complete
+        description = item.search_description
+
+        score = 0
+        exact_name_pos = name.find(query)
+        if exact_name_pos >= 0:
+            score = max(score, 1000 - exact_name_pos * 6)
+
+        exact_complete_pos = complete.find(query)
+        if exact_complete_pos >= 0:
+            score = max(score, 850 - exact_complete_pos * 4)
+
+        exact_description_pos = description.find(query)
+        if exact_description_pos >= 0:
+            score = max(score, 600 - exact_description_pos * 3)
+
+        if query_terms and all(term in full for term in query_terms):
+            score = max(score, 420)
+
+        subseq_name = self._subsequence_score(query_compact, item.search_name_compact)
+        if subseq_name > 0:
+            score = max(score, 500 + subseq_name)
+
+        subseq_full = self._subsequence_score(query_compact, item.search_full_compact)
+        if subseq_full > 0:
+            score = max(score, 320 + subseq_full)
+
+        return score
+
+    def _subsequence_score(self, query: str, candidate: str) -> int:
+        if not query or not candidate or len(query) > len(candidate):
+            return 0
+
+        query_index = 0
+        last_index = -1
+        gaps = 0
+        for index, char in enumerate(candidate):
+            if char != query[query_index]:
+                continue
+            if last_index >= 0:
+                gaps += index - last_index - 1
+            last_index = index
+            query_index += 1
+            if query_index == len(query):
+                break
+
+        if query_index != len(query):
+            return 0
+
+        return max(1, 220 - gaps * 5 - (len(candidate) - len(query)))
 
     def get_item_value_model_count(self, item):
         return 4
