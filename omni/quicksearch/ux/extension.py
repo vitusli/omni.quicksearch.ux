@@ -48,6 +48,7 @@ class Extension(omni.ext.IExt):
         self._window_toggle = None
         self._toolbar_buttons = None
         self._snapshot_task = None
+        self._prewarm_task = None
 
     # -- lifecycle ------------------------------------------------------------
 
@@ -90,6 +91,7 @@ class Extension(omni.ext.IExt):
         )
 
         self._snapshot_task = asyncio.ensure_future(self._menu_snapshot.capture_with_retry())
+        self._prewarm_task = asyncio.ensure_future(self._prewarm_window_next_frame())
         self._preview_capture.start()
         self._create_project.register_menu_entry()
         self._make_paths_relative.register_menu_entry()
@@ -100,6 +102,10 @@ class Extension(omni.ext.IExt):
         if self._snapshot_task and not self._snapshot_task.done():
             self._snapshot_task.cancel()
         self._snapshot_task = None
+
+        if self._prewarm_task and not self._prewarm_task.done():
+            self._prewarm_task.cancel()
+        self._prewarm_task = None
 
         if self._preview_capture:
             self._preview_capture.stop()
@@ -147,3 +153,17 @@ class Extension(omni.ext.IExt):
     async def _refresh_menu_snapshot_next_frame(self):
         await omni.kit.app.get_app().next_update_async()
         self._menu_snapshot.capture_once()
+
+    async def _prewarm_window_next_frame(self):
+        await omni.kit.app.get_app().next_update_async()
+        if self._window is not None:
+            return
+        try:
+            self._window = QuickSearchWindow()
+            hide_fn = getattr(self._window, "hide", None)
+            if callable(hide_fn):
+                hide_fn()
+            elif hasattr(self._window, "visible"):
+                self._window.visible = False
+        except Exception as exc:
+            carb.log_warn(f"[QuickSearchUX] Could not pre-warm quick-search window: {exc}")
