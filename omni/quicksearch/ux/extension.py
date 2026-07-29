@@ -49,6 +49,7 @@ class Extension(omni.ext.IExt):
         self._toolbar_buttons = None
         self._snapshot_task = None
         self._prewarm_task = None
+        self._did_initial_index_refresh = False
 
     # -- lifecycle ------------------------------------------------------------
 
@@ -153,6 +154,7 @@ class Extension(omni.ext.IExt):
                 self._window = None
 
         self._prewarm_task = asyncio.ensure_future(self._prewarm_window_next_frame())
+        self._did_initial_index_refresh = True
         carb.log_info("[QuickSearchUX] Rebuilt search index and refreshed quick-search window")
 
     @staticmethod
@@ -185,11 +187,29 @@ class Extension(omni.ext.IExt):
 
     def show_window(self):
         self._exclusive = True
-        if not self._window:
+
+        if not self._did_initial_index_refresh:
+            if self._menu_snapshot:
+                captured = self._menu_snapshot.capture_once()
+                if not captured:
+                    asyncio.ensure_future(self._menu_snapshot.capture_with_retry())
+
+            if self._window:
+                try:
+                    self._window.destroy()
+                except Exception as exc:
+                    carb.log_warn(f"[QuickSearchUX] Could not recreate quick-search window: {exc}")
+
             self._window = QuickSearchWindow()
-        else:
             self._window.show()
-        asyncio.ensure_future(self._refresh_menu_snapshot_next_frame())
+            self._did_initial_index_refresh = True
+        else:
+            if not self._window:
+                self._window = QuickSearchWindow()
+            else:
+                self._window.show()
+            asyncio.ensure_future(self._refresh_menu_snapshot_next_frame())
+
         asyncio.ensure_future(self._clear_exclusive_next_frame())
 
     def _is_exclusive(self):
