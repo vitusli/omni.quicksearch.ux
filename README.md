@@ -16,7 +16,6 @@ main toolbar.
 | Hotkey              | Context          | Action                                          |
 |---------------------|------------------|-------------------------------------------------|
 | `Ctrl+F`            | Global           | Open unified quick-search window                |
-| `Ctrl+8`            | Global           | Trigger `Layout > Quick Load`                   |
 | `Shift+Escape`      | Global           | Toggle maximize / restore window under cursor   |
 | `Right`             | Stage (focused)  | Expand selected prim                            |
 | `Left`              | Stage (focused)  | Collapse selected prim                          |

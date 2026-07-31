@@ -3,7 +3,6 @@
 Registers:
 
 * ``Ctrl+F``  -> open the unified quick-search window
-* ``Ctrl+8``  -> trigger Layout > Quick Load
 * Stage-window navigation/manipulation hotkeys (Left/Right/Down, Ctrl+Shift+C)
 * A raw keyboard fallback used when the hotkeys core is unavailable and for the
   plain ``Backspace`` "toggle active state" shortcut in the Stage window.
@@ -15,19 +14,6 @@ import omni.ui as ui
 
 ACTION_ID = "ShowUnifiedQuickSearch"
 ACTION_DISPLAY_NAME = "Unified Quick Search"
-
-LAYOUT_QUICK_LOAD_ACTION_ID = "RunLayoutQuickLoadCtrl8"
-LAYOUT_QUICK_LOAD_ACTION_DISPLAY_NAME = "Layout->Quick Load"
-LAYOUT_QUICK_LOAD_ACTION_CANDIDATES = (
-    ("isaacsim.app.setup", "layout_quick_load"),
-    ("omni.kit.quicklayout", "quicklayout_quick_load"),
-    ("omni.kit.quicklayout", "quick_load"),
-)
-LAYOUT_QUICK_LOAD_PATH_CANDIDATES = (
-    ("Layout", "Quick Load"),
-    ("Quicklayout", "Quick Load"),
-    ("Quicklayout", "Quicklayout Quick Load"),
-)
 
 MAXIMIZE_WINDOW_ACTION_ID = "ToggleMaximizeHoveredWindow"
 MAXIMIZE_WINDOW_ACTION_DISPLAY_NAME = "Toggle Maximize Hovered Window"
@@ -55,7 +41,6 @@ class HotkeyManager:
         self._hotkey = None
         self._hotkey_fallback_mode = False
         self._ctrl_f_hotkey_registered = False
-        self._ctrl_8_hotkey_registered = False
         self._maximize_hotkey_registered = False
 
         self._keyboard = None
@@ -79,7 +64,6 @@ class HotkeyManager:
             self._hotkey_registry = None
             self._hotkey = None
             self._ctrl_f_hotkey_registered = False
-            self._ctrl_8_hotkey_registered = False
             self._maximize_hotkey_registered = False
         if self._action_registry:
             try:
@@ -94,11 +78,10 @@ class HotkeyManager:
                 carb.log_warn(f"[QuickSearchUX] Could not unsubscribe keyboard fallback: {exc}")
             self._keyboard_sub_id = None
 
-    # -- Ctrl+F / Ctrl+8 ------------------------------------------------------
+    # -- Ctrl+F ----------------------------------------------------------------
 
     def _register_ctrl_f_hotkey(self):
         self._ctrl_f_hotkey_registered = False
-        self._ctrl_8_hotkey_registered = False
         try:
             from omni.kit.actions.core import get_action_registry
             from omni.kit.hotkeys.core import KeyCombination, get_hotkey_registry
@@ -118,22 +101,12 @@ class HotkeyManager:
                 description="Open unified quick search for menu and stage actions",
                 tag="Quick Search UX",
             )
-            self._action_registry.register_action(
-                self._ext_id,
-                LAYOUT_QUICK_LOAD_ACTION_ID,
-                self.trigger_layout_quick_load,
-                display_name=LAYOUT_QUICK_LOAD_ACTION_DISPLAY_NAME,
-                description="Run Layout > Quick Load from menu bar",
-                tag="Quick Search UX",
-            )
 
             self._hotkey_registry = get_hotkey_registry()
             self._hotkey = self._hotkey_registry.register_hotkey(
                 self._ext_id, key, self._ext_id, ACTION_ID
             )
             self._ctrl_f_hotkey_registered = self._hotkey is not None
-
-            self._register_ctrl_8_hotkey(KeyCombination)
 
             if not self._ctrl_f_hotkey_registered:
                 raise RuntimeError("Ctrl+F hotkey registration returned no handle")
@@ -143,26 +116,6 @@ class HotkeyManager:
         except Exception as exc:
             carb.log_warn(f"[QuickSearchUX] Could not register Ctrl+F hotkey: {exc}")
             self._hotkey_fallback_mode = True
-
-    def _register_ctrl_8_hotkey(self, KeyCombination):
-        preferred_key = self._preferred_keyboard_input_for_digit_8()
-        if preferred_key is None:
-            carb.log_warn(
-                "[QuickSearchUX] Could not resolve keyboard enum for digit 8, using event fallback only"
-            )
-            self._ctrl_8_hotkey_registered = False
-            return
-        try:
-            ctrl_8_hotkey = self._hotkey_registry.register_hotkey(
-                self._ext_id,
-                KeyCombination(preferred_key, carb.input.KEYBOARD_MODIFIER_FLAG_CONTROL),
-                self._ext_id,
-                LAYOUT_QUICK_LOAD_ACTION_ID,
-            )
-            self._ctrl_8_hotkey_registered = ctrl_8_hotkey is not None
-        except Exception as exc:
-            carb.log_warn(f"[QuickSearchUX] Could not register Ctrl+8 hotkey: {exc}")
-            self._ctrl_8_hotkey_registered = False
 
     # -- Shift+Space maximize -------------------------------------------------
 
@@ -280,46 +233,6 @@ class HotkeyManager:
         except Exception as exc:
             carb.log_warn(f"[QuickSearchUX] Could not register Stage arrow hotkeys: {exc}")
 
-    # -- Layout Quick Load ----------------------------------------------------
-
-    def trigger_layout_quick_load(self):
-        action_registry = self._action_registry
-        if action_registry is None:
-            try:
-                from omni.kit.actions.core import get_action_registry
-
-                action_registry = get_action_registry()
-                self._action_registry = action_registry
-            except Exception:
-                action_registry = None
-
-        if action_registry is not None:
-            for ext_id, action_id in LAYOUT_QUICK_LOAD_ACTION_CANDIDATES:
-                try:
-                    action_registry.execute_action(ext_id, action_id)
-                    carb.log_info(f"[QuickSearchUX] Triggered action: {ext_id} {action_id}")
-                    return
-                except Exception:
-                    continue
-
-        trigger_map = self._get_menu_trigger_map()
-        if not trigger_map:
-            self._capture_menu_snapshot()
-            trigger_map = self._get_menu_trigger_map()
-
-        for path in LAYOUT_QUICK_LOAD_PATH_CANDIDATES:
-            trigger_fn = trigger_map.get(path)
-            if not trigger_fn:
-                continue
-            try:
-                trigger_fn()
-                carb.log_info(f"[QuickSearchUX] Triggered menu action: {' > '.join(path)}")
-                return
-            except Exception as exc:
-                carb.log_warn(f"[QuickSearchUX] Could not trigger {' > '.join(path)}: {exc}")
-
-        carb.log_warn("[QuickSearchUX] Quick Load action not found in known actions/paths")
-
     # -- keyboard fallback ----------------------------------------------------
 
     def _register_keyboard_fallback(self):
@@ -345,15 +258,11 @@ class HotkeyManager:
                 self._stage_nav.toggle_selected_prims_active_state()
 
             use_ctrl_f_fallback = self._hotkey_fallback_mode or not self._ctrl_f_hotkey_registered
-            use_ctrl_8_fallback = self._hotkey_fallback_mode or not self._ctrl_8_hotkey_registered
 
             has_ctrl = bool(event.modifiers & carb.input.KEYBOARD_MODIFIER_FLAG_CONTROL)
 
             if use_ctrl_f_fallback and has_ctrl and event.input == carb.input.KeyboardInput.F:
                 self._show_window()
-
-            if use_ctrl_8_fallback and has_ctrl and self._is_digit_8_input(event.input):
-                self.trigger_layout_quick_load()
 
             use_maximize_fallback = self._hotkey_fallback_mode or not self._maximize_hotkey_registered
             is_shift_escape = (
@@ -389,45 +298,3 @@ class HotkeyManager:
             has_focus_fn = getattr(stage_window, "has_focus", None)
             has_focus = bool(has_focus_fn()) if callable(has_focus_fn) else True
         return bool(has_focus)
-
-    # -- digit-8 key resolution ----------------------------------------------
-
-    _DIGIT_8_KEY_NAMES = ("KEY_8", "NUMPAD_8", "NUM_8", "KP_8", "D8", "_8")
-
-    @classmethod
-    def _keyboard_inputs_for_digit_8(cls) -> list:
-        values = []
-        seen = set()
-        for name in cls._DIGIT_8_KEY_NAMES:
-            key = getattr(carb.input.KeyboardInput, name, None)
-            if key is None:
-                continue
-            key_id = int(key)
-            if key_id in seen:
-                continue
-            seen.add(key_id)
-            values.append(key)
-        return values
-
-    @classmethod
-    def _preferred_keyboard_input_for_digit_8(cls):
-        for name in cls._DIGIT_8_KEY_NAMES:
-            key = getattr(carb.input.KeyboardInput, name, None)
-            if key is not None:
-                return key
-        return None
-
-    @classmethod
-    def _is_digit_8_input(cls, key_input) -> bool:
-        for known_key in cls._keyboard_inputs_for_digit_8():
-            if key_input == known_key:
-                return True
-
-        key_name = getattr(key_input, "name", "") or str(key_input)
-        normalized = str(key_name).upper().replace(" ", "")
-        if "F8" in normalized:
-            return False
-        return normalized.endswith("_8") or (
-            normalized.endswith("8")
-            and any(token in normalized for token in ("KEY", "NUM", "NUMPAD", "KP", "D8"))
-        )
